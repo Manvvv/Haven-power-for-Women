@@ -4,7 +4,6 @@
 <div align="center">
 
 ![Haven Banner](https://img.shields.io/badge/HAVEN-AI%20for%20Social%20Good-be185d?style=for-the-badge&logo=shield&logoColor=white)
-![Hacknovate](https://img.shields.io/badge/Hacknovate-7.0-6d1f3e?style=for-the-badge)
 ![Team](https://img.shields.io/badge/Team-Byte%20Me-f9a8d4?style=for-the-badge)
 
 **An AI-powered safety platform that gives abused women a voice — even in silence.**
@@ -331,7 +330,7 @@ Hold 3 seconds → GPS captured via browser API
 
 ## 👥 Team
 
-**Team Byte Me** — Hacknovate 7.0
+**Team Byte Me** 
 
 Built with ❤️ for women's safety · AI for Social Good
 
