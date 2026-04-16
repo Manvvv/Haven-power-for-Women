@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, Shield, Search, Eye, Upload, Users, AlertTriangle, CheckCircle, Clock, RefreshCw, X } from 'lucide-react'
+import { useHavenAuth } from '@/hooks/useHavenAuth'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -17,6 +18,7 @@ interface CulpritMatch {
 type Tab = 'cases' | 'decode' | 'culprit'
 
 export default function AuthorityPage() {
+  useHavenAuth()
   const [unlocked, setUnlocked] = useState(false)
   const [pass, setPass] = useState('')
   const [passError, setPassError] = useState(false)
