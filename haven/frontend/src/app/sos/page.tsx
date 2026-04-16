@@ -3,12 +3,14 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { Shield, ArrowLeft, Wand2, Image, Lock, Share2, AlertCircle, CheckCircle } from 'lucide-react'
 import PanicButton from '@/components/PanicButton'
+import { useHavenAuth } from '@/hooks/useHavenAuth'
 
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 type Step = 'message' | 'generate' | 'encode' | 'share'
 
 export default function SOSPage() {
+  useHavenAuth()
   const [step, setStep] = useState<Step>('message')
   const [keywords, setKeywords] = useState('')
   const [expandedMsg, setExpandedMsg] = useState('')

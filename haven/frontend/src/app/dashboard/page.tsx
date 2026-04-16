@@ -1,9 +1,12 @@
 'use client'
+
 import { useRouter } from 'next/navigation'
 import { Shield, Heart, Scale, Eye, Phone, AlertTriangle } from 'lucide-react'
 import PanicButton from '@/components/PanicButton'
+import { useHavenAuth } from '@/hooks/useHavenAuth'
 
 export default function DashboardPage() {
+  useHavenAuth()
   const router = useRouter()
   const firstName = 'Manav'
 
