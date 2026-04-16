@@ -3,6 +3,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, Send, Volume2, VolumeX, Sparkles } from 'lucide-react'
 import AriaCanvas, { AvatarHandle, AvatarMood } from '@/components/AriaCanvas'
+import { useHavenAuth } from '@/hooks/useHavenAuth'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -11,6 +12,7 @@ function getTime() { return new Date().toLocaleTimeString([], { hour: '2-digit',
 const QUICK = ['I feel anxious', "I'm feeling scared", 'I need coping strategies', "Tell me I'm not alone"]
 
 export default function TherapyPage() {
+  useHavenAuth()
   const chatRef = useRef<HTMLDivElement>(null)
   const avatarRef = useRef<AvatarHandle>(null)
   const synthRef = useRef<SpeechSynthesis | null>(null)
