@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, Scale, Send, Upload, BookOpen, ChevronRight, X } from 'lucide-react'
+import { useHavenAuth } from '@/hooks/useHavenAuth'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -19,6 +20,7 @@ const QUICK_QUESTIONS = [
 ]
 
 export default function LegalPage() {
+  useHavenAuth()
   const [messages, setMessages] = useState<Message[]>([{
     role: 'assistant',
     content: "Hello. I'm Haven's legal assistant, trained on Indian law. Ask me anything about your legal rights — divorce, custody, restraining orders, or filing complaints. Everything is confidential.",
