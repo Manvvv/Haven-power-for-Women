@@ -2,6 +2,7 @@
 import { useHavenAuth } from '@/hooks/useHavenAuth'
 import Link from 'next/link'
 import { Shield, MessageCircle, Scale, Eye, ChevronRight, Heart } from 'lucide-react'
+import { UserButton, SignedIn, SignedOut } from '@clerk/nextjs'
 
 export default function HomePage() {
   useHavenAuth()
@@ -16,9 +17,20 @@ export default function HomePage() {
             <span style={{ fontSize: '1.25rem', fontWeight: 700, color: '#be185d', fontFamily: 'Georgia, serif' }}>Haven</span>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <Link href="/dashboard">
-              <button className="btn-primary" style={{ padding: '9px 18px', fontSize: '0.82rem' }}>Dashboard</button>
-            </Link>
+            <SignedIn>
+              <Link href="/dashboard">
+                <button className="btn-primary" style={{ padding: '9px 18px', fontSize: '0.82rem' }}>Dashboard</button>
+              </Link>
+              <UserButton afterSignOutUrl="/" />
+            </SignedIn>
+            <SignedOut>
+              <Link href="/sign-in">
+                <button className="btn-secondary" style={{ padding: '9px 18px', fontSize: '0.82rem' }}>Sign In</button>
+              </Link>
+              <Link href="/sign-up">
+                <button className="btn-primary" style={{ padding: '9px 18px', fontSize: '0.82rem' }}>Sign Up</button>
+              </Link>
+            </SignedOut>
           </div>
         </div>
       </nav>
