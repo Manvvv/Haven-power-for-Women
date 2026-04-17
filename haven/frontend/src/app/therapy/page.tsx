@@ -78,15 +78,23 @@ export default function TherapyPage() {
       return
     }
 
-    const utter = new SpeechSynthesisUtterance(text)
-    utter.rate = 0.88; utter.pitch = 1.18; utter.volume = 1
-    const voices = synthRef.current.getVoices()
-    const pick = voices.find(v => /samantha|karen|victoria|aria|zira|female/i.test(v.name))
-    if (pick) utter.voice = pick
-    utter.onend = () => { setMood('idle'); avatarRef.current?.setMood('idle') }
-    utter.onerror = () => { setMood('idle'); avatarRef.current?.setMood('idle') }
-    utterRef.current = utter
-    synthRef.current.speak(utter)
+    // Defer the speak command to prevent browser TTS engine from locking up the UI thread after cancel()
+    setTimeout(() => {
+      const utter = new SpeechSynthesisUtterance(text)
+      utter.rate = 0.88; utter.pitch = 1.18; utter.volume = 1
+      const voices = synthRef.current?.getVoices() || []
+      const pick = voices.find(v => /samantha|karen|victoria|aria|zira|female/i.test(v.name))
+      if (pick) utter.voice = pick
+      
+      utter.onend = () => { setMood('idle'); avatarRef.current?.setMood('idle') }
+      utter.onerror = () => { setMood('idle'); avatarRef.current?.setMood('idle') }
+      utterRef.current = utter
+      
+      // Prevent GC bug that freezes TTS
+      ;(window as any)._longSpeechHack = utter
+      
+      synthRef.current?.speak(utter)
+    }, 50)
   }, [setMood])
 
   const sendMessage = async (msg?: string) => {
