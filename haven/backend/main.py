@@ -83,11 +83,11 @@ def call_gemini(prompt: str, system: str = "") -> str:
     return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
 
 
-def call_groq(messages: list, model: str = "llama-3.3-70b-versatile") -> str:
+def call_groq(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 1024) -> str:
     resp = requests.post(
         GROQ_URL,
         headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-        json={"model": model, "messages": messages, "max_tokens": 1024},
+        json={"model": model, "messages": messages, "max_tokens": max_tokens},
         timeout=30,
     )
     if resp.status_code != 200:
@@ -542,16 +542,28 @@ def therapy_chat(body: dict = Body(...)):
     messages = [
         {
             "role": "system",
-            "content": (
-                "You are Haven's compassionate AI therapy assistant. "
-                "Support women experiencing domestic abuse. "
-                "Be warm, empathetic, non-judgmental, and trauma-informed. "
-                "Offer coping strategies and grounding techniques. "
-                "If in immediate danger, remind them to call 112 (India emergency)."
-            )
+            "content": """You are Aria, a warm and compassionate AI therapy companion for women in distress.
+
+CRITICAL RULES — ALWAYS FOLLOW:
+- Keep EVERY reply under 3 sentences maximum
+- Never write long paragraphs
+- Be warm, short, and human — like a caring friend texting
+- Ask ONE simple follow-up question at the end
+- Never list multiple points or use bullet points
+- If you want to say many things, pick only the most important one
+- Speak gently, simply, and directly
+
+Examples of GOOD short replies:
+"I hear you, and I'm so sorry you're going through this. You are not alone in this moment. Can you tell me a little more about what happened?"
+
+"That sounds really scary. You were so brave to reach out. What are you feeling right now?"
+
+"You don't have to face this alone — I'm right here with you. Take a deep breath. What would feel helpful right now?"
+
+NEVER write more than 3 sentences. NEVER write multiple paragraphs."""
         }
     ] + history + [{"role": "user", "content": message}]
-    response = call_groq(messages, model="llama-3.3-70b-versatile")
+    response = call_groq(messages, model="llama-3.3-70b-versatile", max_tokens=150)
     session_id = session_id or f"SESSION-{user_id}-{int(time.time())}"
     if therapy_collection is not None:
         therapy_collection.update_one(
