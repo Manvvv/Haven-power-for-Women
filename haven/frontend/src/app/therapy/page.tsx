@@ -16,6 +16,7 @@ export default function TherapyPage() {
   const chatRef = useRef<HTMLDivElement>(null)
   const avatarRef = useRef<AvatarHandle>(null)
   const synthRef = useRef<SpeechSynthesis | null>(null)
+  const utterRef = useRef<SpeechSynthesisUtterance | null>(null)
 
   const [messages, setMessages] = useState<Message[]>([{
     role: 'assistant',
@@ -26,6 +27,7 @@ export default function TherapyPage() {
   const [loading, setLoading] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [mood, setMoodState] = useState<AvatarMood>('idle')
+  const voiceOnRef = useRef(true)
   const [voiceOn, setVoiceOn] = useState(true)
   const [poem, setPoem] = useState('')
   const [showPoem, setShowPoem] = useState(false)
@@ -65,20 +67,27 @@ export default function TherapyPage() {
   const speak = useCallback((text: string) => {
     synthRef.current?.cancel()
     setMood('talking')
-    if (!voiceOn || !synthRef.current) {
+    avatarRef.current?.setMood('talking')
+
+    if (!voiceOnRef.current || !synthRef.current) {
       const dur = Math.min(text.length * 55, 12000)
-      setTimeout(() => setMood('idle'), dur)
+      setTimeout(() => {
+        setMood('idle')
+        avatarRef.current?.setMood('idle')
+      }, dur)
       return
     }
+
     const utter = new SpeechSynthesisUtterance(text)
     utter.rate = 0.88; utter.pitch = 1.18; utter.volume = 1
     const voices = synthRef.current.getVoices()
     const pick = voices.find(v => /samantha|karen|victoria|aria|zira|female/i.test(v.name))
     if (pick) utter.voice = pick
-    utter.onend = () => setMood('idle')
-    utter.onerror = () => setMood('idle')
+    utter.onend = () => { setMood('idle'); avatarRef.current?.setMood('idle') }
+    utter.onerror = () => { setMood('idle'); avatarRef.current?.setMood('idle') }
+    utterRef.current = utter
     synthRef.current.speak(utter)
-  }, [voiceOn, setMood])
+  }, [setMood])
 
   const sendMessage = async (msg?: string) => {
     const text = msg || input
@@ -178,7 +187,16 @@ export default function TherapyPage() {
           <button
             aria-label={voiceOn ? "Toggle voice off" : "Toggle voice on"}
             title={voiceOn ? "Toggle voice off" : "Toggle voice on"}
-            onClick={() => setVoiceOn(v => !v)}
+            onClick={() => {
+              const newVal = !voiceOn
+              setVoiceOn(newVal)
+              voiceOnRef.current = newVal
+              if (!newVal) {
+                synthRef.current?.cancel()
+                setMood('idle')
+                avatarRef.current?.setMood('idle')
+              }
+            }}
             style={{ background: voiceOn ? 'rgba(190,24,93,0.1)' : 'none', border: '1px solid rgba(190,24,93,0.2)', borderRadius: 8, padding: '6px', cursor: 'pointer', display: 'flex' }}
           >
             {voiceOn ? <Volume2 size={15} style={{ color: '#be185d' }} /> : <VolumeX size={15} style={{ color: '#8b6b7d' }} />}
