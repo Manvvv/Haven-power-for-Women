@@ -4,11 +4,13 @@ import { useRouter } from 'next/navigation'
 import { Shield, Heart, Scale, Eye, Phone, AlertTriangle } from 'lucide-react'
 import PanicButton from '@/components/PanicButton'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
+import { useUser, UserButton } from '@clerk/nextjs'
 
 export default function DashboardPage() {
   useHavenAuth()
   const router = useRouter()
-  const firstName = 'Manav'
+  const { user } = useUser()
+  const firstName = user?.firstName || 'Friend'
 
   const navigate = (href: string) => {
     router.push(href)
@@ -22,12 +24,15 @@ export default function DashboardPage() {
           <Shield size={22} style={{ color: '#be185d' }} />
           <span style={{ fontSize: 'clamp(1rem, 4vw, 1.25rem)', fontWeight: 700, color: '#be185d', fontFamily: 'Georgia' }}>Haven</span>
         </div>
-        <button
-          onClick={() => navigate('/')}
-          style={{ background: 'none', border: '1px solid rgba(190,24,93,0.2)', borderRadius: 8, padding: '6px 14px', cursor: 'pointer', color: '#be185d', fontSize: '0.82rem', fontWeight: 600 }}
-        >
-          Home
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            onClick={() => navigate('/')}
+            style={{ background: 'none', border: '1px solid rgba(190,24,93,0.2)', borderRadius: 8, padding: '6px 14px', cursor: 'pointer', color: '#be185d', fontSize: '0.82rem', fontWeight: 600 }}
+          >
+            Home
+          </button>
+          <UserButton afterSignOutUrl="/" />
+        </div>
       </div>
 
       <div style={{ maxWidth: 900, margin: '0 auto', padding: 'clamp(24px,5vw,48px) 16px' }}>
