@@ -89,7 +89,10 @@ export default function CalculatorPage() {
       <div style={{ width: 320, borderRadius: 44, background: '#1c1c1e', padding: '28px 20px 24px', boxShadow: '0 32px 80px rgba(0,0,0,0.8)', border: '0.5px solid rgba(255,255,255,0.08)' }}>
 
         {/* Display */}
-        <div style={{ textAlign: 'right', padding: '12px 16px 20px', minHeight: 100, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', borderRadius: 16, background: flash ? 'rgba(34,197,94,0.1)' : 'transparent', transition: 'background 0.2s' }}>
+        <div style={{ textAlign: 'right', padding: '12px 16px 20px', minHeight: 100, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', borderRadius: 16, background: flash ? 'rgba(34,197,94,0.1)' : 'transparent', transition: 'background 0.2s', position: 'relative' }}>
+          <div style={{ position: 'absolute', top: 12, left: 16, fontSize: 18, color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>
+            Demo password: 1810
+          </div>
           {op && (
             <div style={{ fontSize: 16, color: 'rgba(255,255,255,0.35)', marginBottom: 4 }}>
               {prev} {op === '/' ? '÷' : op === '*' ? '×' : op === '-' ? '−' : '+'}
