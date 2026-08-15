@@ -75,10 +75,16 @@ export default function PanicButton({ size = 'large' }: PanicButtonProps) {
 
     // Open WhatsApp
     const encodedMsg = encodeURIComponent(msg)
-    const phone = savedContact.replace(/[^0-9]/g, '')
-    const waUrl = phone
-      ? `https://wa.me/${phone}?text=${encodedMsg}`
-      : `https://wa.me/?text=${encodedMsg}`
+    let digits = savedContact.replace(/\D/g, '')
+    if (digits.length === 10 && /^[6-9]/.test(digits)) {
+      digits = '91' + digits
+    } else if (digits.length === 11 && digits.startsWith('0')) {
+      digits = '91' + digits.slice(1)
+    }
+
+    const waUrl = digits
+      ? `https://api.whatsapp.com/send?phone=${digits}&text=${encodedMsg}`
+      : `https://api.whatsapp.com/send?text=${encodedMsg}`
 
     const a = document.createElement('a')
 a.href = waUrl
@@ -129,16 +135,22 @@ document.body.removeChild(a)
     setProgress(0)
   }
 
+  const openSMSApp = (phoneNum: string, textMsg: string) => {
+    const cleanDigits = phoneNum ? phoneNum.replace(/\D/g, '') : '112'
+    const smsUrl = `sms:${cleanDigits}?body=${encodeURIComponent(textMsg)}`
+    window.location.href = smsUrl
+  }
+
+  const lastMsg = location
+    ? `🚨 HAVEN EMERGENCY ALERT!\nI am in danger and need immediate help.\nMy Live Location: https://maps.google.com/?q=${location.lat},${location.lng}\nTime: ${new Date().toLocaleTimeString()}`
+    : `🚨 HAVEN EMERGENCY ALERT!\nI am in danger and need immediate help.\nTime: ${new Date().toLocaleTimeString()}`
+
   const isLarge = size === 'large'
 
   return (
     <>
-      {/* ── Panic Button UI ── */}
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-
-        {/* Main panic button */}
         <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {/* Pulsing ring */}
           {!holding && !fired && (
             <div style={{
               position: 'absolute',
@@ -151,7 +163,6 @@ document.body.removeChild(a)
             }} />
           )}
 
-          {/* Progress ring using SVG */}
           {holding && (
             <svg
               style={{ position: 'absolute', transform: 'rotate(-90deg)', pointerEvents: 'none' }}
@@ -181,7 +192,6 @@ document.body.removeChild(a)
             </svg>
           )}
 
-          {/* The button itself */}
           <button
             onMouseDown={startHold}
             onMouseUp={cancelHold}
@@ -221,7 +231,6 @@ document.body.removeChild(a)
           </button>
         </div>
 
-        {/* Instruction text */}
         <div style={{ textAlign: 'center' }}>
           {!holding && !fired && (
             <p style={{ fontSize: 'clamp(0.72rem, 2vw, 0.78rem)', color: '#8b6b7d', lineHeight: 1.4 }}>
@@ -244,7 +253,6 @@ document.body.removeChild(a)
           )}
         </div>
 
-        {/* Contact info + setup */}
         {isLarge && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: '0.75rem', color: '#8b6b7d' }}>
@@ -259,7 +267,6 @@ document.body.removeChild(a)
           </div>
         )}
 
-        {/* Reset after fire */}
         {fired && (
           <button onClick={reset} style={{ fontSize: '0.75rem', color: '#8b6b7d', background: 'none', border: '1px solid #e2d6e0', borderRadius: 20, padding: '5px 14px', cursor: 'pointer', marginTop: 4 }}>
             Reset
@@ -267,7 +274,6 @@ document.body.removeChild(a)
         )}
       </div>
 
-      {/* ── Confirm Modal ── */}
       {showConfirm && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 16 }}>
           <div style={{ background: 'white', borderRadius: 20, padding: 32, maxWidth: 380, width: '100%', textAlign: 'center' }}>
@@ -285,19 +291,23 @@ document.body.removeChild(a)
                 </a>
               </div>
             )}
-            <div style={{ display: 'flex', gap: 10 }}>
-              <a href="tel:112" style={{ flex: 1, background: '#dc2626', color: 'white', padding: '12px', borderRadius: 12, textDecoration: 'none', fontWeight: 700, fontSize: '0.85rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-                📞 Call 112
-              </a>
-              <button onClick={() => setShowConfirm(false)} style={{ flex: 1, background: '#f3f4f6', color: '#6b7280', padding: '12px', borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
-                Close
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <button onClick={() => openSMSApp(savedContact, lastMsg)} style={{ background: '#2563eb', color: 'white', padding: '12px', borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
+                Send Offline SMS Alert
               </button>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <a href="tel:112" style={{ flex: 1, background: '#dc2626', color: 'white', padding: '12px', borderRadius: 12, textDecoration: 'none', fontWeight: 700, fontSize: '0.85rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                  📞 Call 112
+                </a>
+                <button onClick={() => setShowConfirm(false)} style={{ flex: 1, background: '#f3f4f6', color: '#6b7280', padding: '12px', borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}>
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* ── Setup Contact Modal ── */}
       {showSetup && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 16 }}>
           <div style={{ background: 'white', borderRadius: 20, padding: 28, maxWidth: 380, width: '100%' }}>

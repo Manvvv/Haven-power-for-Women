@@ -10,6 +10,20 @@ interface SOSCase {
   case_id: string; decoded_text: string; severity?: string
   nature_of_abuse?: string; immediate_danger?: boolean; location?: string
   needs?: string[]; summary?: string; status: string; created_at: string
+  trigger_type?: string
+  has_evidence?: boolean
+  evidence_hash?: string
+  evidence?: {
+    evidence_id?: string
+    evidence_hash?: string
+    has_audio?: boolean
+    has_image?: boolean
+    audio_base64?: string
+    image_base64?: string
+    mime_type_audio?: string
+    duration_seconds?: number
+    captured_at?: string
+  }
 }
 interface CulpritMatch {
   name?: string; physical_description: string; behavioral_traits: string
@@ -39,6 +53,10 @@ export default function AuthorityPage() {
   const [reportForm, setReportForm] = useState({ name: '', physical_description: '', behavioral_traits: '', location: '' })
   const [reporting, setReporting] = useState(false)
   const [reportMsg, setReportMsg] = useState('')
+  const [activeLiveTrackCase, setActiveLiveTrackCase] = useState<SOSCase | null>(null)
+  const [liveCoords, setLiveCoords] = useState<{ lat: number; lng: number; accuracy: number; timestamp: string; speed?: number } | null>(null)
+  const [trackingConnected, setTrackingConnected] = useState(false)
+  const [dispatchStatusMap, setDispatchStatusMap] = useState<Record<string, { agency: string; status: string; dispatch_id: string }>>({})
 
   useEffect(() => { if (unlocked) fetchCases() }, [severityFilter, statusFilter, unlocked])
 
@@ -54,14 +72,76 @@ export default function AuthorityPage() {
       if (severityFilter) params.set('severity', severityFilter)
       if (statusFilter) params.set('status', statusFilter)
       const res = await fetch(`${API}/cases?${params}`)
+      if (!res.ok) throw new Error('Server error')
       const data = await res.json()
       setCases(data.cases || [])
     } catch { setCases([]) } finally { setLoading(false) }
   }
 
   async function updateCaseStatus(caseId: string, status: string) {
-    await fetch(`${API}/cases/${caseId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) })
-    fetchCases()
+    try {
+      const res = await fetch(`${API}/cases/${caseId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) })
+      if (!res.ok) throw new Error('Server error')
+      fetchCases()
+    } catch (e) {
+      console.error('Failed to update case status', e)
+    }
+  }
+
+  const startLiveTracking = (c: SOSCase) => {
+    setActiveLiveTrackCase(c)
+    setLiveCoords(null)
+    setTrackingConnected(false)
+
+    try {
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsHost = API.replace(/^https?:\/\//, '') || 'localhost:8000'
+      const ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/track/${c.case_id}`)
+      
+      ws.onopen = () => setTrackingConnected(true)
+      ws.onmessage = (evt) => {
+        try {
+          const data = JSON.parse(evt.data)
+          if (data.latitude && data.longitude) {
+            setLiveCoords({
+              lat: data.latitude,
+              lng: data.longitude,
+              accuracy: data.accuracy || 5,
+              timestamp: data.timestamp || new Date().toLocaleTimeString(),
+              speed: data.speed || 0
+            })
+          }
+        } catch { /* silent */ }
+      }
+      ws.onclose = () => setTrackingConnected(false)
+    } catch (e) {
+      console.log('WS connection notice:', e)
+    }
+  }
+
+  const dispatchCase = async (caseId: string, agency: 'ERSS_112' | 'NCW_HELPLINE' | 'SNEHA_CRISIS') => {
+    try {
+      const res = await fetch(`${API}/authority/dispatch-webhook`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          case_id: caseId,
+          agency_type: agency,
+          priority: 'CRITICAL',
+          dispatcher_notes: 'Priority dispatch confirmed by Authority Dashboard Officer'
+        })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setDispatchStatusMap(prev => ({
+          ...prev,
+          [caseId]: { agency, status: 'DISPATCHED', dispatch_id: data.dispatch_id }
+        }))
+        alert(`🚨 Case ${caseId} dispatched to ${agency}!\nDispatch ID: ${data.dispatch_id}\nEstimated Response: ${data.estimated_arrival_minutes} mins.`)
+      }
+    } catch (e) {
+      alert('Failed to connect to dispatch gateway')
+    }
   }
 
   async function decodeImage(e: React.ChangeEvent<HTMLInputElement>) {
@@ -74,14 +154,17 @@ export default function AuthorityPage() {
       setDecodeImg(result)
       try {
         const decRes = await fetch(`${API}/decode`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image_base64: b64 }) })
+        if (!decRes.ok) throw new Error('Decode server error')
         const decData = await decRes.json()
         const msg: string = decData.decoded_message || ''
         setDecodeResult(msg)
         if (msg && msg !== 'No hidden message found') {
           const decompRes = await fetch(`${API}/text-decomposition`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: msg }) })
-          const decompData = await decompRes.json()
-          setDecomposed(decompData)
-          await fetch(`${API}/save-extracted-data`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decoded_text: msg, ...decompData }) })
+          if (decompRes.ok) {
+            const decompData = await decompRes.json()
+            setDecomposed(decompData)
+            await fetch(`${API}/save-extracted-data`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decoded_text: msg, ...decompData }) })
+          }
         }
       } catch { setDecodeResult('Error decoding image.') }
       finally { setDecoding(false) }
@@ -97,6 +180,7 @@ export default function AuthorityPage() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ description: culpritDesc, top_n: 10, search_mode: searchMode, min_score: searchMode === 'description' ? 0.75 : 0 })
       })
+      if (!res.ok) throw new Error('Search server error')
       const data = await res.json()
       setMatches(data.matches || [])
       setSearchType(data.search_type || '')
@@ -108,6 +192,7 @@ export default function AuthorityPage() {
     setReporting(true); setReportMsg('')
     try {
       const res = await fetch(`${API}/culprit/report`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: reportForm.name || 'Unknown', physical_description: reportForm.physical_description, behavioral_traits: reportForm.behavioral_traits, location: reportForm.location || '', reporter_id: 'authority' }) })
+      if (!res.ok) throw new Error('Report server error')
       const data = await res.json()
       if (data.culprit_id) { setReportMsg(`✓ Registered: ${data.culprit_id}`); setReportForm({ name: '', physical_description: '', behavioral_traits: '', location: '' }) }
       else setReportMsg(`Error: ${JSON.stringify(data)}`)
@@ -212,6 +297,13 @@ export default function AuthorityPage() {
                           <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
                             <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: '#8b6b7d', background: '#f8f4f6', padding: '2px 7px', borderRadius: 4 }}>{c.case_id}</span>
                             <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: '0.7rem', fontWeight: 600, padding: '2px 8px', borderRadius: 50, background: cfg.bg, color: cfg.text }}>{cfg.icon}{sev.toUpperCase()}</span>
+                            {c.trigger_type === 'voice_code' ? (
+                              <span style={{ fontSize: '0.68rem', background: 'rgba(168,85,247,0.15)', color: '#7c3aed', padding: '2px 8px', borderRadius: 50, fontWeight: 700 }}>🎙 VOICE SOS</span>
+                            ) : c.trigger_type === 'panic' ? (
+                              <span style={{ fontSize: '0.68rem', background: 'rgba(220,38,38,0.1)', color: '#dc2626', padding: '2px 8px', borderRadius: 50, fontWeight: 700 }}>🚨 PANIC SOS</span>
+                            ) : (
+                              <span style={{ fontSize: '0.68rem', background: 'rgba(190,24,93,0.1)', color: '#be185d', padding: '2px 8px', borderRadius: 50, fontWeight: 700 }}>📷 STEGO SOS</span>
+                            )}
                             {c.immediate_danger && <span style={{ fontSize: '0.68rem', background: '#fee2e2', color: '#dc2626', padding: '2px 8px', borderRadius: 50, fontWeight: 700 }}>⚠️ DANGER</span>}
                             <span style={{ fontSize: '0.68rem', background: '#f3f4f6', color: '#6b7280', padding: '2px 8px', borderRadius: 50 }}>{c.status}</span>
                           </div>
@@ -220,10 +312,49 @@ export default function AuthorityPage() {
                           </p>
                           {c.summary && <p style={{ fontSize: '0.75rem', color: '#8b6b7d', fontStyle: 'italic' }}>{c.summary}</p>}
                           {c.location && <p style={{ fontSize: '0.72rem', color: '#8b6b7d', marginTop: 4 }}>📍 {c.location}</p>}
+
+                          {c.has_evidence && c.evidence && (
+                            <div style={{ marginTop: 10, padding: '8px 12px', background: '#fdf4ff', border: '1px solid #f0abfc', borderRadius: 10 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6, flexWrap: 'wrap' }}>
+                                <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#86198f' }}>
+                                  🔒 FORENSIC BLACKBOX EVIDENCE (SHA-256 SEALED)
+                                </span>
+                                <span style={{ fontSize: '0.62rem', fontFamily: 'monospace', color: '#a21caf', background: '#fae8ff', padding: '2px 5px', borderRadius: 4 }}>
+                                  Hash: {c.evidence_hash?.slice(0, 14)}...
+                                </span>
+                              </div>
+                              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                                {c.evidence.audio_base64 && (
+                                  <div style={{ flex: 1, minWidth: 180 }}>
+                                    <div style={{ fontSize: '0.68rem', color: '#701a75', fontWeight: 600, marginBottom: 2 }}>🎙️ Ambient Audio:</div>
+                                    <audio controls src={c.evidence.audio_base64} style={{ width: '100%', height: 28 }} />
+                                  </div>
+                                )}
+                                {c.evidence.image_base64 && (
+                                  <div>
+                                    <div style={{ fontSize: '0.68rem', color: '#701a75', fontWeight: 600, marginBottom: 2 }}>📸 Scene Snapshot:</div>
+                                    <img src={c.evidence.image_base64} alt="Forensic snapshot" style={{ width: 54, height: 40, objectFit: 'cover', borderRadius: 6, border: '1px solid #f0abfc' }} />
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end', flexShrink: 0 }}>
                           <span style={{ fontSize: '0.68rem', color: '#8b6b7d' }}>{c.created_at ? new Date(c.created_at).toLocaleDateString() : ''}</span>
                           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            <button
+                              onClick={() => startLiveTracking(c)}
+                              style={{ fontSize: '0.7rem', padding: '4px 10px', borderRadius: 8, background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', cursor: 'pointer', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4 }}
+                            >
+                              📡 Live GPS
+                            </button>
+                            <button
+                              onClick={() => dispatchCase(c.case_id, 'ERSS_112')}
+                              style={{ fontSize: '0.7rem', padding: '4px 10px', borderRadius: 8, background: dispatchStatusMap[c.case_id] ? '#dcfce7' : '#fee2e2', color: dispatchStatusMap[c.case_id] ? '#15803d' : '#dc2626', border: 'none', cursor: 'pointer', fontWeight: 700 }}
+                            >
+                              {dispatchStatusMap[c.case_id] ? '✅ ERSS 112 Dispatched' : '🚨 Dispatch 112'}
+                            </button>
                             {(['in_progress', 'resolved'] as string[]).filter(s => s !== c.status).map(s => (
                               <button key={s} onClick={() => updateCaseStatus(c.case_id, s)} style={{ fontSize: '0.7rem', padding: '4px 10px', borderRadius: 8, background: s === 'resolved' ? '#dcfce7' : '#fef9c3', color: s === 'resolved' ? '#15803d' : '#a16207', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
                                 {s.replace('_', ' ')}
@@ -379,6 +510,74 @@ export default function AuthorityPage() {
           </div>
         )}
       </div>
+
+      {/* ── Live GPS Tracking Modal ── */}
+      {activeLiveTrackCase && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 16 }}>
+          <div style={{ background: 'white', borderRadius: 20, padding: 24, maxWidth: 500, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ width: 10, height: 10, borderRadius: '50%', background: trackingConnected ? '#22c55e' : '#eab308', display: 'inline-block' }} />
+                <h3 style={{ fontFamily: 'Georgia', fontSize: '1.15rem', color: '#1a0a12', margin: 0 }}>
+                  Live GPS Tracking Room
+                </h3>
+              </div>
+              <button
+                onClick={() => setActiveLiveTrackCase(null)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, marginBottom: 16 }}>
+              <div style={{ fontSize: '0.8rem', color: '#64748b', marginBottom: 4 }}>
+                <strong>Case ID:</strong> {activeLiveTrackCase.case_id}
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#64748b', marginBottom: 4 }}>
+                <strong>Stream Status:</strong> {trackingConnected ? '🟢 Connected (Real-Time WebSocket)' : '🟡 Waiting for stream signal...'}
+              </div>
+              {liveCoords ? (
+                <div style={{ marginTop: 10, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: 10, fontSize: '0.82rem', color: '#166534' }}>
+                  <div><strong>📍 Live Coordinates:</strong> {liveCoords.lat.toFixed(5)}, {liveCoords.lng.toFixed(5)}</div>
+                  <div><strong>🎯 Accuracy:</strong> ±{liveCoords.accuracy.toFixed(1)}m</div>
+                  <div><strong>🕒 Last Ping:</strong> {liveCoords.timestamp}</div>
+                </div>
+              ) : (
+                <div style={{ marginTop: 10, padding: 10, fontSize: '0.8rem', color: '#8b6b7d', textAlign: 'center' }}>
+                  ⏳ Listening for victim GPS updates...
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', gap: 10 }}>
+              {liveCoords && (
+                <a
+                  href={`https://maps.google.com/?q=${liveCoords.lat},${liveCoords.lng}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    flex: 1, background: '#2563eb', color: 'white', padding: '11px',
+                    borderRadius: 10, textDecoration: 'none', fontWeight: 700, fontSize: '0.85rem',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6
+                  }}
+                >
+                  🗺️ View Live in Google Maps ↗
+                </a>
+              )}
+              <button
+                onClick={() => dispatchCase(activeLiveTrackCase.case_id, 'ERSS_112')}
+                style={{
+                  flex: 1, background: '#dc2626', color: 'white', border: 'none',
+                  padding: '11px', borderRadius: 10, fontWeight: 700, fontSize: '0.85rem', cursor: 'pointer'
+                }}
+              >
+                🚨 Fast Dispatch 112
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

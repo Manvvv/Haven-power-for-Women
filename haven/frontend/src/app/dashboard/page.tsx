@@ -1,7 +1,7 @@
 'use client'
 import { useRouter } from 'next/navigation'
 import { UserButton } from '@clerk/nextjs'
-import { Shield, Heart, Scale, Eye, Phone, AlertTriangle } from 'lucide-react'
+import { Shield, Heart, Scale, Eye, Phone, AlertTriangle, Mic } from 'lucide-react'
 import PanicButton from '@/components/PanicButton'
 import { useLang, LanguageSelector } from '@/components/LanguageContext'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
@@ -80,6 +80,7 @@ export default function DashboardPage() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 16, marginBottom: 24 }}>
           {[
             { icon: <Eye size={32} style={{ color: '#be185d' }} />, title: t('sendDiscreeSOS'), desc: t('sendDiscreSOSDesc'), href: '/sos', cta: t('createSOSImage'), bg: 'linear-gradient(135deg, #fce7f3, #fdf2f8)' },
+            { icon: <Mic size={32} style={{ color: '#7c3aed' }} />, title: 'Voice SOS', desc: 'Set up a secret voice code to trigger silent emergency alerts', href: '/voice-sos', cta: 'Setup Voice SOS', bg: 'linear-gradient(135deg, #f5f0ff, #fce7f3)' },
             { icon: <Heart size={32} style={{ color: '#db2777' }} />, title: t('talkToSomeone'), desc: t('talkDesc'), href: '/therapy', cta: t('startTalking'), bg: 'linear-gradient(135deg, #fdf2f8, #f5f0ff)' },
             { icon: <Scale size={32} style={{ color: '#9d174d' }} />, title: t('knowRights'), desc: t('knowRightsDesc'), href: '/legal', cta: t('askLegalQuestions'), bg: 'linear-gradient(135deg, #f5f0ff, #fce7f3)' },
           ].map((card, i) => (

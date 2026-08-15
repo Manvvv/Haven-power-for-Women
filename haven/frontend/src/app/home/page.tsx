@@ -2,7 +2,7 @@
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { UserButton, SignedIn, SignedOut } from '@clerk/nextjs'
-import { Shield, MessageCircle, Scale, Eye, ChevronRight, Heart } from 'lucide-react'
+import { Shield, MessageCircle, Scale, Eye, ChevronRight, Heart, Mic } from 'lucide-react'
 import { useLang, LanguageSelector } from '@/components/LanguageContext'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
 
@@ -47,7 +47,7 @@ export default function HomePage() {
       <section style={{ maxWidth: 1200, margin: '0 auto', padding: 'clamp(40px,8vw,80px) 16px clamp(30px,5vw,60px)', textAlign: 'center' }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: 'rgba(190,24,93,0.08)', borderRadius: 50, padding: '7px 16px', marginBottom: 24, border: '1px solid rgba(190,24,93,0.15)' }}>
           <span style={{ fontSize: '0.75rem', color: '#be185d', fontWeight: 600 }}>
-            {t(' 🏆 Team - Byte Me')}
+            {t('teamBadge')}
           </span>
         </div>
 
@@ -79,6 +79,7 @@ export default function HomePage() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: 16 }}>
           {[
             { icon: <Eye size={28} style={{ color: '#be185d' }} />, title: t('discreeSOS'), desc: t('discreSOSDesc'), href: '/sos', color: '#fce7f3' },
+            { icon: <Mic size={28} style={{ color: '#7c3aed' }} />, title: 'Voice SOS', desc: 'Set up a secret voice code to silently trigger emergency alerts', href: '/voice-sos', color: '#f5f0ff' },
             { icon: <Heart size={28} style={{ color: '#db2777' }} />, title: t('mentalHealth'), desc: t('mentalHealthDesc'), href: '/therapy', color: '#fdf2f8' },
             { icon: <Scale size={28} style={{ color: '#9d174d' }} />, title: t('legalGuidance'), desc: t('legalGuidanceDesc'), href: '/legal', color: '#f5f0ff' },
             { icon: <MessageCircle size={28} style={{ color: '#be185d' }} />, title: t('authorityDB'), desc: t('authorityDBDesc'), href: '/authority', color: '#fce7f3' },

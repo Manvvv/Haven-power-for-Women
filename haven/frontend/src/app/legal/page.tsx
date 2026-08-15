@@ -45,6 +45,7 @@ export default function LegalPage() {
     setInput(''); setLoading(true); setShowSidebar(false)
     try {
       const res = await fetch(`${API}/legal/query`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: q, user_id: 'anonymous' }) })
+      if (!res.ok) throw new Error('Server error')
       const data = await res.json()
       setMessages(prev => [...prev, { role: 'assistant', content: data.answer, sources: data.sources?.filter(Boolean), time: getTime() }])
     } catch {
@@ -58,6 +59,7 @@ export default function LegalPage() {
     const form = new FormData(); form.append('file', file); form.append('source_name', file.name)
     try {
       const res = await fetch(`${API}/legal/upload-doc`, { method: 'POST', body: form })
+      if (!res.ok) throw new Error('Upload error')
       const data = await res.json()
       setUploadMsg(`✓ "${file.name}" added (${data.chunks_embedded} chunks)`)
     } catch { setUploadMsg('Upload failed.') }
@@ -80,7 +82,7 @@ export default function LegalPage() {
           <button onClick={() => setShowSidebar(!showSidebar)} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(190,24,93,0.08)', border: '1px solid rgba(190,24,93,0.2)', borderRadius: 8, padding: '7px 10px', cursor: 'pointer', fontSize: 'clamp(0.7rem, 2vw, 0.8rem)', color: '#be185d', fontWeight: 600 }}>
             <BookOpen size={13} />Questions
           </button>
-          <input placeholder="Type your message..."  ref={fileRef} type="file" accept=".pdf" style={{ display: 'none' }} onChange={uploadPDF} />
+          <input ref={fileRef} type="file" accept=".pdf" style={{ display: 'none' }} onChange={uploadPDF} />
           <button onClick={() => fileRef.current?.click()} disabled={uploading} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(190,24,93,0.08)', border: '1px solid rgba(190,24,93,0.2)', borderRadius: 8, padding: '7px 10px', cursor: uploading ? 'not-allowed' : 'pointer', fontSize: 'clamp(0.7rem, 2vw, 0.8rem)', color: '#be185d', fontWeight: 600 }}>
             <Upload size={13} />{uploading ? '...' : 'PDF'}
           </button>

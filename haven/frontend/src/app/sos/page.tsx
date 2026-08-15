@@ -25,10 +25,12 @@ export default function SOSPage() {
     setLoading(true); setError('')
     try {
       const res = await fetch(`${API}/text-generation`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keywords }) })
+      if (!res.ok) throw new Error('Server returned an error')
       const data = await res.json()
+      if (!data.expanded_message) throw new Error('Invalid response')
       setExpandedMsg(data.expanded_message)
       setStep('generate')
-    } catch { setError('Could not expand message. Please check your connection.') }
+    } catch { setError('Could not expand message. Please check backend connection.') }
     finally { setLoading(false) }
   }
 
@@ -36,10 +38,12 @@ export default function SOSPage() {
     setLoading(true); setError('')
     try {
       const res = await fetch(`${API}/img-generation`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: imagePrompt }) })
+      if (!res.ok) throw new Error('Server returned an error')
       const data = await res.json()
+      if (!data.image_base64) throw new Error('Invalid response')
       setImageBase64(data.image_base64)
       setStep('encode')
-    } catch { setError('Image generation failed. Please try again.') }
+    } catch { setError('Image generation failed. Please check backend connection.') }
     finally { setLoading(false) }
   }
 
@@ -47,10 +51,12 @@ export default function SOSPage() {
     setLoading(true); setError('')
     try {
       const res = await fetch(`${API}/encode`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: expandedMsg, image_base64: imageBase64 }) })
+      if (!res.ok) throw new Error('Server returned an error')
       const data = await res.json()
+      if (!data.encoded_image_base64) throw new Error('Invalid response')
       setEncodedImageBase64(data.encoded_image_base64)
       setStep('share')
-    } catch { setError('Encoding failed. Please try again.') }
+    } catch { setError('Encoding failed. Please check backend connection.') }
     finally { setLoading(false) }
   }
 
@@ -191,7 +197,7 @@ export default function SOSPage() {
               <button className="btn-primary" onClick={downloadImage} style={{ width: '100%', marginBottom: 10 }}>⬇️ Download SOS Image</button>
               <p style={{ fontSize: '0.78rem', color: '#8b6b7d', textAlign: 'center', marginBottom: 10 }}>📌 Download first, then share below</p>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginBottom: 10 }}>
-                <button onClick={() => window.open(`https://wa.me/?text=${encodeURIComponent('I need help. #HavenSOS')}`, '_blank')} style={{ padding: '11px 10px', borderRadius: 12, border: 'none', background: '#25D366', color: 'white', fontWeight: 600, fontSize: 'clamp(0.75rem, 2vw, 0.85rem)', cursor: 'pointer' }}>💬 WhatsApp</button>
+                <button onClick={() => window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent('I need help. #HavenSOS')}`, '_blank')} style={{ padding: '11px 10px', borderRadius: 12, border: 'none', background: '#25D366', color: 'white', fontWeight: 600, fontSize: 'clamp(0.75rem, 2vw, 0.85rem)', cursor: 'pointer' }}>💬 WhatsApp</button>
                 <button onClick={() => window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent('I need help. #HavenSOS #WomenSafety')}`, '_blank')} style={{ padding: '11px 10px', borderRadius: 12, border: 'none', background: '#000', color: 'white', fontWeight: 600, fontSize: 'clamp(0.75rem, 2vw, 0.85rem)', cursor: 'pointer' }}>𝕏 Twitter/X</button>
                 <button onClick={() => { navigator.clipboard.writeText('#HavenSOS #WomenSafety'); window.open('https://www.instagram.com/', '_blank') }} style={{ padding: '11px 10px', borderRadius: 12, border: 'none', background: 'linear-gradient(45deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888)', color: 'white', fontWeight: 600, fontSize: 'clamp(0.75rem, 2vw, 0.85rem)', cursor: 'pointer' }}>📸 Instagram</button>
                 <button onClick={() => window.open(`https://www.facebook.com/sharer/sharer.php?quote=${encodeURIComponent('I need help. #HavenSOS')}`, '_blank')} style={{ padding: '11px 10px', borderRadius: 12, border: 'none', background: '#1877F2', color: 'white', fontWeight: 600, fontSize: 'clamp(0.75rem, 2vw, 0.85rem)', cursor: 'pointer' }}>👤 Facebook</button>

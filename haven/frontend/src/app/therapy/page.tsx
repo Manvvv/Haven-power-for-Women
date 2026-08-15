@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { ArrowLeft, Send, Volume2, VolumeX, Sparkles } from 'lucide-react'
 import AriaCanvas, { AvatarHandle, AvatarMood } from '@/components/AriaCanvas'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
+import { useLang } from '@/components/LanguageContext'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -11,8 +12,19 @@ interface Message { role: 'user' | 'assistant'; content: string; time: string }
 function getTime() { return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
 const QUICK = ['I feel anxious', "I'm feeling scared", 'I need coping strategies', "Tell me I'm not alone"]
 
+const LANG_VOICE_MAP: Record<string, string[]> = {
+  en: ['en-US', 'en-GB', 'en-IN', 'en'],
+  hi: ['hi-IN', 'hi'],
+  gu: ['gu-IN', 'gu', 'hi-IN'],
+  mr: ['mr-IN', 'mr', 'hi-IN'],
+  te: ['te-IN', 'te', 'hi-IN'],
+  bn: ['bn-IN', 'bn', 'hi-IN'],
+  ta: ['ta-IN', 'ta', 'hi-IN'],
+}
+
 export default function TherapyPage() {
   useHavenAuth()
+  const { lang, t } = useLang()
   const chatRef = useRef<HTMLDivElement>(null)
   const avatarRef = useRef<AvatarHandle>(null)
   const synthRef = useRef<SpeechSynthesis | null>(null)
@@ -63,22 +75,34 @@ export default function TherapyPage() {
   }, [])
 
   const speak = useCallback((text: string) => {
-    synthRef.current?.cancel()
+    if (typeof window === 'undefined' || !synthRef.current) return
+    synthRef.current.cancel()
     setMood('talking')
-    if (!voiceOn || !synthRef.current) {
+    if (!voiceOn) {
       const dur = Math.min(text.length * 55, 12000)
       setTimeout(() => setMood('idle'), dur)
       return
     }
     const utter = new SpeechSynthesisUtterance(text)
-    utter.rate = 0.88; utter.pitch = 1.18; utter.volume = 1
+    utter.rate = 0.88
+    utter.pitch = 1.18
+    utter.volume = 1
+
     const voices = synthRef.current.getVoices()
-    const pick = voices.find(v => /samantha|karen|victoria|aria|zira|female/i.test(v.name))
-    if (pick) utter.voice = pick
+    const targetCodes = LANG_VOICE_MAP[lang] || ['en-US']
+    const pick =
+      voices.find(v => targetCodes.some(code => v.lang.toLowerCase().startsWith(code.toLowerCase()))) ||
+      voices.find(v => /samantha|karen|victoria|aria|zira|swara|kalpana|female/i.test(v.name)) ||
+      voices[0]
+
+    if (pick) {
+      utter.voice = pick
+      utter.lang = pick.lang
+    }
     utter.onend = () => setMood('idle')
     utter.onerror = () => setMood('idle')
     synthRef.current.speak(utter)
-  }, [voiceOn, setMood])
+  }, [voiceOn, lang, setMood])
 
   const sendMessage = async (msg?: string) => {
     const text = msg || input
@@ -93,6 +117,7 @@ export default function TherapyPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text, user_id: 'anon', session_id: sessionId })
       })
+      if (!res.ok) throw new Error('Server returned error')
       const data = await res.json()
       const reply = data.response || "I'm here with you."
       setMessages(prev => [...prev, { role: 'assistant', content: reply, time: getTime() }])
@@ -110,6 +135,7 @@ export default function TherapyPage() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ emotional_state: 'distressed and in need of hope' })
       })
+      if (!res.ok) throw new Error('Server returned error')
       const data = await res.json()
       if (data.poem) { setPoem(data.poem); setShowPoem(true) }
     } catch {}
@@ -175,6 +201,9 @@ export default function TherapyPage() {
               <span style={{ fontSize: '0.68rem', color: moodColor, fontWeight: 600, transition: 'color 0.4s' }}>{moodLabel}</span>
             </div>
           )}
+          <span style={{ fontSize: '0.68rem', background: '#fdf2f8', border: '1px solid rgba(190,24,93,0.2)', padding: '4px 8px', borderRadius: 8, color: '#be185d', fontWeight: 600 }}>
+            🗣️ {lang.toUpperCase()}
+          </span>
           <button
             aria-label={voiceOn ? "Toggle voice off" : "Toggle voice on"}
             title={voiceOn ? "Toggle voice off" : "Toggle voice on"}

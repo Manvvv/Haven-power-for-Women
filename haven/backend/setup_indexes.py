@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 client = MongoClient(os.getenv("MONGO_ENDPOINT"))
-db = client["haven"]
+db = client["Haven"]
 
 print("Setting up Haven MongoDB indexes...")
 
@@ -80,10 +80,20 @@ print("\n[3/3] Creating standard indexes for SOS cases...")
 db["sos_cases"].create_index([("severity", 1), ("status", 1)])
 db["sos_cases"].create_index([("created_at", -1)])
 db["sos_cases"].create_index([("case_id", 1)], unique=True, sparse=True)
+db["sos_cases"].create_index([("trigger_type", 1)])
 db["culprits"].create_index([("culprit_id", 1)])
 db["therapy_sessions"].create_index([("session_id", 1)])
 db["therapy_sessions"].create_index([("user_id", 1)])
 print("  ✓ Standard indexes created")
+
+# ── 4. Voice SOS indexes ──────────────────────────────────
+print("\n[4/4] Creating Voice SOS indexes...")
+db["voice_sos_config"].create_index([("user_id", 1)], unique=True)
+db["trusted_contacts"].create_index([("user_id", 1)])
+db["sos_events"].create_index([("user_id", 1)])
+db["sos_events"].create_index([("event_id", 1)], unique=True, sparse=True)
+db["sos_events"].create_index([("created_at", -1)])
+print("  ✓ Voice SOS indexes created")
 
 print("\n✅ Setup complete! Haven is ready to use.")
 print("\nNext steps:")

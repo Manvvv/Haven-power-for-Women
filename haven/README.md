@@ -40,6 +40,15 @@ Woman types keywords → AI expands message → FLUX.1 generates image
 → Authority Dashboard decodes → Response dispatched
 ```
 
+### 🗣️ Voice-Activated Silent SOS
+Configure a secret **"Safe Word"** or phrase. When spoken while HAVEN is active, the browser's speech recognition normalizes and hashes the phrase (SHA-256), captures exact high-accuracy GPS coordinates, and triggers an emergency alert to pre-configured trusted contacts — without playing loud sounds or revealing the trigger phrase.
+
+```
+User speaks safe word → SpeechRecognition API normalizes text
+→ SHA-256 hash comparison → Geolocation API captures lat/lng
+→ Voice SOS trigger API → Emergency WhatsApp alert & Authority case logged
+```
+
 ### 🚨 Panic Button
 Hold for **3 seconds** → GPS location captured → Emergency WhatsApp alert sent to trusted contact instantly.
 
@@ -212,6 +221,19 @@ Base URL: `http://localhost:8000`
 | `POST` | `/legal/query` | RAG legal question answering |
 | `POST` | `/legal/upload-doc` | Upload legal PDF to knowledge base |
 | `POST` | `/generate-poem` | Generate empowering poem |
+
+### Voice SOS & Trusted Contacts
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/voice-sos/config` | Save safe word (SHA-256 hashed) and settings |
+| `GET` | `/voice-sos/config/{user_id}` | Get config status (never returns safe word) |
+| `POST` | `/voice-sos/trigger` | Trigger real emergency SOS alert |
+| `POST` | `/voice-sos/test` | Test mode trigger (simulates workflow, no alert sent) |
+| `GET` | `/voice-sos/history/{user_id}` | Get event history for a user |
+| `POST` | `/trusted-contacts` | Add/update trusted emergency contacts |
+| `GET` | `/trusted-contacts/{user_id}` | List trusted emergency contacts |
+| `GET` | `/voice-sos/analytics` | Get aggregated Voice SOS stats |
 
 ### Cases & Authority
 
