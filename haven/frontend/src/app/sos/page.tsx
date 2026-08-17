@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { Shield, ArrowLeft, Wand2, Image, Lock, Share2, AlertCircle, CheckCircle } from 'lucide-react'
 import PanicButton from '@/components/PanicButton'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
-
+import { secureFetch } from '@/lib/api'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 type Step = 'message' | 'generate' | 'encode' | 'share'
@@ -24,7 +24,10 @@ export default function SOSPage() {
     if (!keywords.trim()) return
     setLoading(true); setError('')
     try {
-      const res = await fetch(`${API}/text-generation`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keywords }) })
+      const res = await secureFetch('/text-generation', {
+        method: 'POST',
+        body: JSON.stringify({ keywords })
+      })
       if (!res.ok) throw new Error('Server returned an error')
       const data = await res.json()
       if (!data.expanded_message) throw new Error('Invalid response')
@@ -37,7 +40,10 @@ export default function SOSPage() {
   async function generateImage() {
     setLoading(true); setError('')
     try {
-      const res = await fetch(`${API}/img-generation`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: imagePrompt }) })
+      const res = await secureFetch('/img-generation', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: imagePrompt })
+      })
       if (!res.ok) throw new Error('Server returned an error')
       const data = await res.json()
       if (!data.image_base64) throw new Error('Invalid response')
@@ -50,7 +56,10 @@ export default function SOSPage() {
   async function encodeMessage() {
     setLoading(true); setError('')
     try {
-      const res = await fetch(`${API}/encode`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: expandedMsg, image_base64: imageBase64 }) })
+      const res = await secureFetch('/encode', {
+        method: 'POST',
+        body: JSON.stringify({ message: expandedMsg, image_base64: imageBase64 })
+      })
       if (!res.ok) throw new Error('Server returned an error')
       const data = await res.json()
       if (!data.encoded_image_base64) throw new Error('Invalid response')
@@ -59,6 +68,7 @@ export default function SOSPage() {
     } catch { setError('Encoding failed. Please check backend connection.') }
     finally { setLoading(false) }
   }
+
 
   function downloadImage() {
     const link = document.createElement('a')

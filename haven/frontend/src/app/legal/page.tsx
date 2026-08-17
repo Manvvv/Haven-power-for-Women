@@ -3,7 +3,9 @@
 import { useState, useRef, useEffect } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, Scale, Send, Upload, BookOpen, ChevronRight, X } from 'lucide-react'
+import { useUser } from '@clerk/nextjs'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
+import { secureFetch } from '@/lib/api'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -21,6 +23,9 @@ const QUICK_QUESTIONS = [
 
 export default function LegalPage() {
   useHavenAuth()
+  const { user } = useUser()
+  const userId = user?.id || 'anonymous'
+
   const [messages, setMessages] = useState<Message[]>([{
     role: 'assistant',
     content: "Hello. I'm Haven's legal assistant, trained on Indian law. Ask me anything about your legal rights — divorce, custody, restraining orders, or filing complaints. Everything is confidential.",
@@ -44,7 +49,10 @@ export default function LegalPage() {
     setMessages(prev => [...prev, { role: 'user', content: q, time: getTime() }])
     setInput(''); setLoading(true); setShowSidebar(false)
     try {
-      const res = await fetch(`${API}/legal/query`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: q, user_id: 'anonymous' }) })
+      const res = await secureFetch('/legal/query', {
+        method: 'POST',
+        body: JSON.stringify({ question: q, user_id: userId })
+      })
       if (!res.ok) throw new Error('Server error')
       const data = await res.json()
       setMessages(prev => [...prev, { role: 'assistant', content: data.answer, sources: data.sources?.filter(Boolean), time: getTime() }])
@@ -58,13 +66,14 @@ export default function LegalPage() {
     setUploading(true); setUploadMsg('')
     const form = new FormData(); form.append('file', file); form.append('source_name', file.name)
     try {
-      const res = await fetch(`${API}/legal/upload-doc`, { method: 'POST', body: form })
+      const res = await secureFetch('/legal/upload-doc', { method: 'POST', body: form })
       if (!res.ok) throw new Error('Upload error')
       const data = await res.json()
       setUploadMsg(`✓ "${file.name}" added (${data.chunks_embedded} chunks)`)
     } catch { setUploadMsg('Upload failed.') }
     finally { setUploading(false); if (fileRef.current) fileRef.current.value = '' }
   }
+
 
   return (
     <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #fdf2f8 0%, #f5f0ff 100%)', display: 'flex', flexDirection: 'column' }}>

@@ -2,9 +2,11 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, Send, Volume2, VolumeX, Sparkles } from 'lucide-react'
+import { useUser } from '@clerk/nextjs'
 import AriaCanvas, { AvatarHandle, AvatarMood } from '@/components/AriaCanvas'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
 import { useLang } from '@/components/LanguageContext'
+import { secureFetch } from '@/lib/api'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -12,22 +14,27 @@ interface Message { role: 'user' | 'assistant'; content: string; time: string }
 function getTime() { return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
 const QUICK = ['I feel anxious', "I'm feeling scared", 'I need coping strategies', "Tell me I'm not alone"]
 
-const LANG_VOICE_MAP: Record<string, string[]> = {
-  en: ['en-US', 'en-GB', 'en-IN', 'en'],
-  hi: ['hi-IN', 'hi'],
-  gu: ['gu-IN', 'gu', 'hi-IN'],
-  mr: ['mr-IN', 'mr', 'hi-IN'],
-  te: ['te-IN', 'te', 'hi-IN'],
-  bn: ['bn-IN', 'bn', 'hi-IN'],
-  ta: ['ta-IN', 'ta', 'hi-IN'],
+const LANG_VOICE_MAP: Record<string, { codes: string[]; keywords: RegExp }> = {
+  en: { codes: ['en-IN', 'en-US', 'en-GB', 'en'], keywords: /samantha|karen|victoria|aria|zira|female/i },
+  hi: { codes: ['hi-IN', 'hi_IN', 'hi'], keywords: /hindi|हिन्दी|lekha|swara|kalpana|neerja|female/i },
+  gu: { codes: ['gu-IN', 'gu_IN', 'gu', 'hi-IN'], keywords: /gujarati|ગુજરાતી|dhwani|female/i },
+  mr: { codes: ['mr-IN', 'mr_IN', 'mr', 'hi-IN'], keywords: /marathi|मराठी|aarohi|female/i },
+  te: { codes: ['te-IN', 'te_IN', 'te', 'hi-IN'], keywords: /telugu|తెలుగు|chitra|female/i },
+  bn: { codes: ['bn-IN', 'bn_IN', 'bn', 'hi-IN'], keywords: /bengali|bangla|বাংলা|tanisha|female/i },
+  ta: { codes: ['ta-IN', 'ta_IN', 'ta', 'hi-IN'], keywords: /tamil|தமிழ்|valluvar|female/i },
 }
 
 export default function TherapyPage() {
   useHavenAuth()
+  const { user } = useUser()
+  const userId = user?.id || 'anon'
   const { lang, t } = useLang()
+
   const chatRef = useRef<HTMLDivElement>(null)
   const avatarRef = useRef<AvatarHandle>(null)
   const synthRef = useRef<SpeechSynthesis | null>(null)
+  const isMountedRef = useRef(true)
+  const [cachedVoices, setCachedVoices] = useState<SpeechSynthesisVoice[]>([])
 
   const [messages, setMessages] = useState<Message[]>([{
     role: 'assistant',
@@ -45,24 +52,46 @@ export default function TherapyPage() {
   const [showMobileAvatar, setShowMobileAvatar] = useState(false)
   const [avatarSize, setAvatarSize] = useState(300)
 
-  // Responsive detection
+  // Responsive & Voice initialization
   useEffect(() => {
+    isMountedRef.current = true
     if (typeof window === 'undefined') return
     synthRef.current = window.speechSynthesis
+
+    const updateVoices = () => {
+      if (synthRef.current) {
+        const vList = synthRef.current.getVoices()
+        if (vList.length > 0 && isMountedRef.current) {
+          setCachedVoices(vList)
+        }
+      }
+    }
+    updateVoices()
+    if (window.speechSynthesis) {
+      window.speechSynthesis.onvoiceschanged = updateVoices
+    }
 
     const update = () => {
       const w = window.innerWidth
       const mobile = w < 768
-      setIsMobile(mobile)
-      if (mobile) {
-        setAvatarSize(Math.min(Math.floor(w * 0.55), 220))
-      } else {
-        setAvatarSize(Math.min(Math.floor(w * 0.28), 320))
+      if (isMountedRef.current) {
+        setIsMobile(mobile)
+        if (mobile) {
+          setAvatarSize(Math.min(Math.floor(w * 0.55), 220))
+        } else {
+          setAvatarSize(Math.min(Math.floor(w * 0.28), 320))
+        }
       }
     }
     update()
     window.addEventListener('resize', update)
-    return () => window.removeEventListener('resize', update)
+    return () => {
+      isMountedRef.current = false
+      window.removeEventListener('resize', update)
+      if (synthRef.current) {
+        synthRef.current.cancel()
+      }
+    }
   }, [])
 
   useEffect(() => {
@@ -70,6 +99,7 @@ export default function TherapyPage() {
   }, [messages])
 
   const setMood = useCallback((m: AvatarMood) => {
+    if (!isMountedRef.current) return
     setMoodState(m)
     avatarRef.current?.setMood(m)
   }, [])
@@ -77,32 +107,48 @@ export default function TherapyPage() {
   const speak = useCallback((text: string) => {
     if (typeof window === 'undefined' || !synthRef.current) return
     synthRef.current.cancel()
-    setMood('talking')
+    
     if (!voiceOn) {
-      const dur = Math.min(text.length * 55, 12000)
-      setTimeout(() => setMood('idle'), dur)
+      setMood('idle')
       return
     }
+
     const utter = new SpeechSynthesisUtterance(text)
-    utter.rate = 0.88
-    utter.pitch = 1.18
+    utter.rate = 0.90
+    utter.pitch = 1.15
     utter.volume = 1
 
-    const voices = synthRef.current.getVoices()
-    const targetCodes = LANG_VOICE_MAP[lang] || ['en-US']
-    const pick =
-      voices.find(v => targetCodes.some(code => v.lang.toLowerCase().startsWith(code.toLowerCase()))) ||
-      voices.find(v => /samantha|karen|victoria|aria|zira|swara|kalpana|female/i.test(v.name)) ||
+    const voices = cachedVoices.length > 0 ? cachedVoices : synthRef.current.getVoices()
+    const langConfig = LANG_VOICE_MAP[lang] || LANG_VOICE_MAP['en']
+    const targetCodes = langConfig.codes
+    const targetLangCode = targetCodes[0] || 'en-US'
+    utter.lang = targetLangCode
+
+    // Find best matching voice for the selected language
+    const regionalVoice =
+      voices.find(v => targetCodes.some(code => v.lang.toLowerCase().replace('_', '-').startsWith(code.toLowerCase().replace('_', '-')))) ||
+      voices.find(v => langConfig.keywords.test(v.name)) ||
+      voices.find(v => /samantha|karen|victoria|aria|zira|female/i.test(v.name)) ||
       voices[0]
 
-    if (pick) {
-      utter.voice = pick
-      utter.lang = pick.lang
+    if (regionalVoice) {
+      utter.voice = regionalVoice
+      utter.lang = regionalVoice.lang
     }
-    utter.onend = () => setMood('idle')
-    utter.onerror = () => setMood('idle')
+
+    // Crucial: Only start talking mouth animation when audio actually starts playing
+    utter.onstart = () => {
+      if (isMountedRef.current) setMood('talking')
+    }
+    utter.onend = () => {
+      if (isMountedRef.current) setMood('idle')
+    }
+    utter.onerror = () => {
+      if (isMountedRef.current) setMood('idle')
+    }
+
     synthRef.current.speak(utter)
-  }, [voiceOn, lang, setMood])
+  }, [voiceOn, lang, cachedVoices, setMood])
 
   const sendMessage = async (msg?: string) => {
     const text = msg || input
@@ -112,27 +158,32 @@ export default function TherapyPage() {
     setLoading(true)
     setMood('listening')
     try {
-      const res = await fetch(`${API}/therapy/chat`, {
+      const res = await secureFetch('/therapy/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, user_id: 'anon', session_id: sessionId })
+        body: JSON.stringify({ message: text, user_id: userId, session_id: sessionId, lang })
       })
       if (!res.ok) throw new Error('Server returned error')
       const data = await res.json()
       const reply = data.response || "I'm here with you."
-      setMessages(prev => [...prev, { role: 'assistant', content: reply, time: getTime() }])
-      setSessionId(data.session_id)
-      speak(reply)
+      if (isMountedRef.current) {
+        setMessages(prev => [...prev, { role: 'assistant', content: reply, time: getTime() }])
+        setSessionId(data.session_id)
+        speak(reply)
+      }
     } catch {
-      setMood('idle')
-      setMessages(prev => [...prev, { role: 'assistant', content: "I'm having trouble connecting. If you need immediate help, please call 112.", time: getTime() }])
-    } finally { setLoading(false) }
+      if (isMountedRef.current) {
+        setMood('idle')
+        setMessages(prev => [...prev, { role: 'assistant', content: "I'm having trouble connecting. If you need immediate help, please call 112.", time: getTime() }])
+      }
+    } finally {
+      if (isMountedRef.current) setLoading(false)
+    }
   }
 
   const generatePoem = async () => {
     try {
-      const res = await fetch(`${API}/generate-poem`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const res = await secureFetch('/generate-poem', {
+        method: 'POST',
         body: JSON.stringify({ emotional_state: 'distressed and in need of hope' })
       })
       if (!res.ok) throw new Error('Server returned error')
@@ -140,6 +191,7 @@ export default function TherapyPage() {
       if (data.poem) { setPoem(data.poem); setShowPoem(true) }
     } catch {}
   }
+
 
   const moodColor = mood === 'talking' ? '#22c55e' : mood === 'listening' ? '#a855f7' : '#be185d'
   const moodBg = mood === 'talking' ? 'rgba(34,197,94,0.12)' : mood === 'listening' ? 'rgba(168,85,247,0.12)' : 'rgba(190,24,93,0.08)'

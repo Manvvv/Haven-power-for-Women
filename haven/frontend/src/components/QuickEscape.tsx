@@ -82,10 +82,11 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
       <div style={{ display: isCamouflaged ? 'none' : 'block' }}>
         {children}
 
-        {/* Discreet Floating Quick Escape Button (Top Right) */}
+        {/* Discreet Floating Quick Escape Button */}
         <button
           onClick={() => setIsCamouflaged(true)}
-          title="Quick Escape (Double-tap ESC key)"
+          title="Quick Disguise"
+          aria-label="Quick Disguise"
           style={{
             position: 'fixed',
             bottom: '18px',
@@ -107,7 +108,7 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
             transition: 'all 0.2s',
           }}
         >
-          <span style={{ fontSize: '0.85rem' }}>⚡</span> Quick Disguise <span style={{ opacity: 0.6, fontSize: '0.68rem', background: 'rgba(255,255,255,0.15)', padding: '2px 5px', borderRadius: 4 }}>ESC×2</span>
+          <span style={{ fontSize: '0.85rem' }}>⚡</span> Quick Disguise
         </button>
       </div>
 

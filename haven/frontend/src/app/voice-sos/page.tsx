@@ -6,10 +6,11 @@ import {
   ArrowLeft, Mic, MicOff, Shield, MapPin, Phone, Mail, Plus,
   Trash2, TestTube, History, AlertTriangle, Check, X, Eye, EyeOff, Info
 } from 'lucide-react'
+import { useUser } from '@clerk/nextjs'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
+import { secureFetch } from '@/lib/api'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-const USER_ID = 'haven_user' // Fixed user ID for this implementation
 
 // --- Types ---
 interface VoiceConfig {
@@ -238,6 +239,9 @@ const styles = {
 
 export default function VoiceSOSPage() {
   useHavenAuth()
+  const { user } = useUser()
+  const userId = user?.id || 'haven_user'
+
   // --- State ---
   const [isSupported, setIsSupported] = useState<boolean | null>(null)
   const [config, setConfig] = useState<VoiceConfig>({ configured: false, enabled: false, has_safe_word: false, cooldown_seconds: 60, contacts: [] })
@@ -276,30 +280,23 @@ export default function VoiceSOSPage() {
   const trackingWsRef = useRef<WebSocket | null>(null)
   const streamIntervalRef = useRef<any>(null)
   const wakeLockRef = useRef<any>(null)
+  const isMountedRef = useRef<boolean>(true)
   
   // --- Initialization ---
   useEffect(() => {
-    // Check support & restore local safe word hash/text and cached location
+    // Check support & restore cached location
     if (typeof window !== 'undefined') {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
       setIsSupported(!!SpeechRecognition)
-
-      const storedWord = localStorage.getItem('haven_voice_safeword') || ''
-      const storedHash = localStorage.getItem('haven_voice_safehash') || ''
-      if (storedWord) setSafeWordText(storedWord)
-      if (storedHash) setSafeWordHash(storedHash)
 
       const cachedLat = parseFloat(localStorage.getItem('haven_last_lat') || '0')
       const cachedLng = parseFloat(localStorage.getItem('haven_last_lng') || '0')
       if (cachedLat && cachedLng) {
         setCurrentLocation({ lat: cachedLat, lng: cachedLng })
       }
-
-      const storedContacts = localStorage.getItem('haven_trusted_contacts')
-      if (storedContacts) {
-        try { setContacts(JSON.parse(storedContacts)) } catch { /* silent */ }
-      }
     }
+
+    isMountedRef.current = true
 
     // Load data
     fetchConfig()
@@ -313,12 +310,27 @@ export default function VoiceSOSPage() {
     styleSheet.innerText = styles.pulseKeyframes
     document.head.appendChild(styleSheet)
     return () => {
+      isMountedRef.current = false
       styleSheet.remove()
       if (geoWatchRef.current !== null && navigator.geolocation) {
         navigator.geolocation.clearWatch(geoWatchRef.current)
+        geoWatchRef.current = null
       }
+      if (streamIntervalRef.current) {
+        clearInterval(streamIntervalRef.current)
+        streamIntervalRef.current = null
+      }
+      if (trackingWsRef.current) {
+        try { trackingWsRef.current.close() } catch { /* silent */ }
+        trackingWsRef.current = null
+      }
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop() } catch { /* silent */ }
+        recognitionRef.current = null
+      }
+      releaseWakeLock()
     }
-  }, [])
+  }, [userId])
 
   useEffect(() => {
     isEnabledRef.current = config.enabled
@@ -327,12 +339,12 @@ export default function VoiceSOSPage() {
     } else if (!config.enabled && isListening) {
       stopListening()
     }
-  }, [config.enabled])
+  }, [config.enabled, config.has_safe_word])
 
   // --- API Calls ---
   const fetchConfig = async () => {
     try {
-      const res = await fetch(`${API}/voice-sos/config/${USER_ID}`)
+      const res = await secureFetch(`/voice-sos/config/${userId}`)
       if (res.ok) {
         const data = await res.json()
         setConfig(data)
@@ -345,14 +357,11 @@ export default function VoiceSOSPage() {
 
   const fetchContacts = async () => {
     try {
-      const res = await fetch(`${API}/trusted-contacts/${USER_ID}`)
+      const res = await secureFetch(`/trusted-contacts/${userId}`)
       if (res.ok) {
         const data = await res.json()
         const fetched = data.contacts || []
         setContacts(fetched)
-        if (typeof window !== 'undefined' && fetched.length > 0) {
-          localStorage.setItem('haven_trusted_contacts', JSON.stringify(fetched))
-        }
       }
     } catch (error) {
       console.error('Error fetching contacts:', error)
@@ -361,7 +370,7 @@ export default function VoiceSOSPage() {
 
   const fetchHistory = async () => {
     try {
-      const res = await fetch(`${API}/voice-sos/history/${USER_ID}`)
+      const res = await secureFetch(`/voice-sos/history/${userId}`)
       if (res.ok) {
         const data = await res.json()
         setHistory((data.events || []).slice(0, 10))
@@ -370,6 +379,7 @@ export default function VoiceSOSPage() {
       console.error('Error fetching history:', error)
     }
   }
+
 
   // --- Helpers ---
   const hashString = async (str: string) => {
@@ -415,7 +425,7 @@ export default function VoiceSOSPage() {
     try {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const wsHost = (API.replace(/^https?:\/\//, '') || 'localhost:8000')
-      const ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/track/${eventId}`)
+      const ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/track/${eventId}?role=broadcaster`)
       
       ws.onopen = () => {
         setIsStreamingLocation(true)
@@ -451,9 +461,8 @@ export default function VoiceSOSPage() {
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify(locData))
             } else {
-              fetch(`${API}/sos/location-update`, {
+              secureFetch('/sos/location-update', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(locData)
               }).catch(() => {})
             }
@@ -487,27 +496,99 @@ export default function VoiceSOSPage() {
     try {
       let imageBase64 = ''
       try {
-        const videoStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } })
+        const videoStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: 'user' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
+        })
         const videoTrack = videoStream.getVideoTracks()[0]
-        const imageCapture = (window as any).ImageCapture ? new (window as any).ImageCapture(videoTrack) : null
         
-        if (imageCapture) {
-          const bitmap = await imageCapture.grabFrame()
-          const canvas = document.createElement('canvas')
-          canvas.width = bitmap.width || 640
-          canvas.height = bitmap.height || 480
-          const ctx = canvas.getContext('2d')
-          ctx?.drawImage(bitmap, 0, 0)
-          imageBase64 = canvas.toDataURL('image/jpeg', 0.6)
+        // 1. Hardware ImageCapture API (Crystal clear real sensor capture)
+        if (typeof window !== 'undefined' && 'ImageCapture' in window && videoTrack) {
+          try {
+            const imageCapture = new (window as any).ImageCapture(videoTrack)
+            // Wait 350ms for hardware auto-exposure & sensor warm-up
+            await new Promise(r => setTimeout(r, 350))
+            const photoBlob = await imageCapture.takePhoto().catch(async () => {
+              const bitmap = await imageCapture.grabFrame()
+              const canvas = document.createElement('canvas')
+              canvas.width = bitmap.width || 640
+              canvas.height = bitmap.height || 480
+              const ctx = canvas.getContext('2d')
+              ctx?.drawImage(bitmap, 0, 0)
+              return new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.8))
+            })
+            
+            if (photoBlob) {
+              imageBase64 = await new Promise<string>((resolve) => {
+                const reader = new FileReader()
+                reader.onloadend = () => resolve((reader.result as string) || '')
+                reader.readAsDataURL(photoBlob)
+              })
+            }
+          } catch (e) {
+            console.log('ImageCapture fallback to canvas video')
+          }
         }
-        videoTrack.stop()
-      } catch {
-        console.log('Camera capture unavailable or skipped')
+
+        // 2. Video element fallback with proper frame delivery wait
+        if (!imageBase64 && videoTrack) {
+          const video = document.createElement('video')
+          video.muted = true
+          video.playsInline = true
+          video.autoplay = true
+          video.srcObject = videoStream
+          
+          await new Promise<void>((resolve) => {
+            let done = false
+            const finish = () => {
+              if (!done) {
+                done = true
+                // Delay 400ms after play/load to let auto-exposure adjust
+                setTimeout(resolve, 450)
+              }
+            }
+            video.onloadeddata = finish
+            video.onplaying = finish
+            video.play().catch(finish)
+            setTimeout(finish, 1500)
+          })
+
+          const canvas = document.createElement('canvas')
+          const w = video.videoWidth || 640
+          const h = video.videoHeight || 480
+          canvas.width = w
+          canvas.height = h
+          const ctx = canvas.getContext('2d')
+          if (ctx) {
+            ctx.drawImage(video, 0, 0, w, h)
+            imageBase64 = canvas.toDataURL('image/jpeg', 0.75)
+          }
+        }
+
+        videoStream.getTracks().forEach(t => t.stop())
+      } catch (err) {
+        console.log('Camera capture notice: skipped or unavailable', err)
       }
+
 
       try {
         const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
-        const mediaRecorder = new MediaRecorder(audioStream)
+        
+        // Detect mobile supported MIME types (WebM for Chrome/Android, MP4/AAC for iOS)
+        let mimeType = 'audio/webm'
+        if (typeof MediaRecorder !== 'undefined') {
+          if (!MediaRecorder.isTypeSupported('audio/webm')) {
+            if (MediaRecorder.isTypeSupported('audio/mp4')) mimeType = 'audio/mp4'
+            else if (MediaRecorder.isTypeSupported('audio/aac')) mimeType = 'audio/aac'
+            else mimeType = ''
+          }
+        }
+
+        const options = mimeType ? { mimeType } : undefined
+        const mediaRecorder = new MediaRecorder(audioStream, options)
         const audioChunks: Blob[] = []
 
         mediaRecorder.ondataavailable = (e) => {
@@ -515,20 +596,19 @@ export default function VoiceSOSPage() {
         }
 
         mediaRecorder.onstop = async () => {
-          const audioBlob = new Blob(audioChunks, { type: 'audio/webm' })
+          const audioBlob = new Blob(audioChunks, { type: mimeType || 'audio/webm' })
           const reader = new FileReader()
           reader.readAsDataURL(audioBlob)
           reader.onloadend = async () => {
             const audioBase64 = (reader.result as string) || ''
             
-            await fetch(`${API}/sos/evidence`, {
+            await secureFetch('/sos/evidence', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 case_id: caseId,
                 audio_base64: audioBase64,
                 image_base64: imageBase64,
-                mime_type_audio: 'audio/webm',
+                mime_type_audio: mimeType || 'audio/webm',
                 mime_type_image: 'image/jpeg',
                 duration_seconds: 6.0,
                 device_info: typeof navigator !== 'undefined' ? navigator.userAgent : 'Web Browser',
@@ -546,7 +626,7 @@ export default function VoiceSOSPage() {
           }
         }, 6000)
       } catch {
-        console.log('Audio evidence capture notice')
+        console.log('Audio evidence capture notice: skipped or unavailable')
       }
     } catch (e) {
       console.log('Forensic evidence recorder notice:', e)
@@ -634,15 +714,12 @@ export default function VoiceSOSPage() {
         const h = await hashString(currentNorm)
         setSafeWordHash(h)
         setSafeWordText(currentNorm)
-        localStorage.setItem('haven_voice_safeword', currentNorm)
-        localStorage.setItem('haven_voice_safehash', h)
       }
 
-      const res = await fetch(`${API}/voice-sos/config`, {
+      const res = await secureFetch('/voice-sos/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          user_id: USER_ID,
+          user_id: userId,
           enabled: config.enabled,
           safe_word: safeWord || currentNorm || 'unchanged',
           cooldown_seconds: config.cooldown_seconds || 60,
@@ -669,11 +746,10 @@ export default function VoiceSOSPage() {
     setIsSavingContact(true)
     try {
       const updatedContacts = [...contacts, { ...newContact, priority: contacts.length + 1 }]
-      const res = await fetch(`${API}/trusted-contacts`, {
+      const res = await secureFetch('/trusted-contacts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          user_id: USER_ID,
+          user_id: userId,
           contacts: updatedContacts.map(c => ({ name: c.name, phone: c.phone, email: c.email || '', priority: c.priority || 1 }))
         })
       })
@@ -690,11 +766,10 @@ export default function VoiceSOSPage() {
   const handleDeleteContact = async (contactName: string) => {
     try {
       const updatedContacts = contacts.filter(c => c.name !== contactName)
-      const res = await fetch(`${API}/trusted-contacts`, {
+      const res = await secureFetch('/trusted-contacts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          user_id: USER_ID,
+          user_id: userId,
           contacts: updatedContacts.map(c => ({ name: c.name, phone: c.phone, email: c.email || '', priority: c.priority || 1 }))
         })
       })
@@ -703,6 +778,7 @@ export default function VoiceSOSPage() {
       console.error('Error deleting contact:', error)
     }
   }
+
 
   // --- Speech Recognition Logic ---
   const startListening = () => {
@@ -760,10 +836,14 @@ export default function VoiceSOSPage() {
     }
 
     recognition.onend = () => {
-      setIsListening(false)
-      // Auto-restart if still enabled
-      if (isEnabledRef.current) {
-        setTimeout(() => startListening(), 1000)
+      if (isMountedRef.current) setIsListening(false)
+      // Auto-restart if still enabled and component is mounted
+      if (isEnabledRef.current && isMountedRef.current) {
+        setTimeout(() => {
+          if (isEnabledRef.current && isMountedRef.current) {
+            startListening()
+          }
+        }, 1200)
       }
     }
 
@@ -868,11 +948,11 @@ export default function VoiceSOSPage() {
     const endpoint = testMode ? '/voice-sos/test' : '/voice-sos/trigger'
     
     try {
-      const res = await fetch(`${API}${endpoint}`, {
+      const res = await secureFetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          user_id: USER_ID,
+          user_id: userId,
+          spoken_phrase: safeWordText || safeWord,
           hashed_safe_word: safeWordHash,
           latitude: lat,
           longitude: lng,
@@ -910,6 +990,7 @@ export default function VoiceSOSPage() {
         setTestResult({ success: false, message: 'Network error — could not reach server' })
       }
     }
+
 
     // Resume listening if enabled and not in test mode
     if (!testMode && config.enabled) {

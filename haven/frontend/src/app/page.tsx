@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
-const SECRET = '1810'
+const SECRET = process.env.NEXT_PUBLIC_DISGUISE_PIN || '1810'
 
 export default function CalculatorPage() {
   const router = useRouter()
@@ -90,9 +90,6 @@ export default function CalculatorPage() {
 
         {/* Display */}
         <div style={{ textAlign: 'right', padding: '12px 16px 20px', minHeight: 100, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', borderRadius: 16, background: flash ? 'rgba(34,197,94,0.1)' : 'transparent', transition: 'background 0.2s', position: 'relative' }}>
-          <div style={{ position: 'absolute', top: 12, left: 16, fontSize: 18, color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>
-            Demo password: 1810
-          </div>
           {op && (
             <div style={{ fontSize: 16, color: 'rgba(255,255,255,0.35)', marginBottom: 4 }}>
               {prev} {op === '/' ? '÷' : op === '*' ? '×' : op === '-' ? '−' : '+'}
@@ -102,6 +99,7 @@ export default function CalculatorPage() {
             {display}
           </div>
         </div>
+
 
         {/* Buttons */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

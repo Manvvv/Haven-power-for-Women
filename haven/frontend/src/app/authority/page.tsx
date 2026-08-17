@@ -1,8 +1,9 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, Shield, Search, Eye, Upload, Users, AlertTriangle, CheckCircle, Clock, RefreshCw, X } from 'lucide-react'
+import { ArrowLeft, Shield, Search, Eye, Upload, Users, AlertTriangle, CheckCircle, Clock, RefreshCw, X, FileText, UserCheck, ShieldAlert, Printer } from 'lucide-react'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
+import { secureFetch, getAuthorityToken, setAuthorityToken, clearAuthorityToken } from '@/lib/api'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -29,6 +30,39 @@ interface CulpritMatch {
   name?: string; physical_description: string; behavioral_traits: string
   location?: string; culprit_id: string; score?: number
 }
+interface DIRFormData {
+  case_id: string
+  dir_form_number: string
+  generated_at: string
+  officer_name: string
+  officer_designation: string
+  station_name: string
+  district: string
+  case_severity: string
+  case_summary: string
+  nature_of_abuse: string
+  immediate_danger: boolean
+  location: string
+  needs: string[]
+  has_forensic_evidence: boolean
+  evidence_hash: string
+  dir_report_text: string
+  legal_sections: string[]
+  relief_recommended: string[]
+}
+interface DiscreetDispatchResult {
+  dispatch_id: string
+  dispatch_type: string
+  response_protocol: {
+    agency_name: string
+    approach: string
+    vehicle: string
+    siren: boolean
+    estimated_minutes: number
+    contact_number: string
+  }
+  status: string
+}
 type Tab = 'cases' | 'decode' | 'culprit'
 
 export default function AuthorityPage() {
@@ -36,6 +70,7 @@ export default function AuthorityPage() {
   const [unlocked, setUnlocked] = useState(false)
   const [pass, setPass] = useState('')
   const [passError, setPassError] = useState(false)
+  const [authLoading, setAuthLoading] = useState(false)
   const [tab, setTab] = useState<Tab>('cases')
   const [cases, setCases] = useState<SOSCase[]>([])
   const [loading, setLoading] = useState(false)
@@ -57,12 +92,66 @@ export default function AuthorityPage() {
   const [liveCoords, setLiveCoords] = useState<{ lat: number; lng: number; accuracy: number; timestamp: string; speed?: number } | null>(null)
   const [trackingConnected, setTrackingConnected] = useState(false)
   const [dispatchStatusMap, setDispatchStatusMap] = useState<Record<string, { agency: string; status: string; dispatch_id: string }>>({})
+  const trackingWsRef = useRef<WebSocket | null>(null)
+
+  // DIR Form & Discreet Dispatch state
+  const [dirFormCase, setDirFormCase] = useState<SOSCase | null>(null)
+  const [dirFormData, setDirFormData] = useState<DIRFormData | null>(null)
+  const [dirGenerating, setDirGenerating] = useState(false)
+  const [dirOfficer, setDirOfficer] = useState({ name: '', designation: 'Protection Officer', station: '', district: '' })
+  const [discreetDispatchResult, setDiscreetDispatchResult] = useState<DiscreetDispatchResult | null>(null)
+  const [discreetDispatching, setDiscreetDispatching] = useState<string>('')
+
+  useEffect(() => {
+    // Restore session if existing authority token found
+    const existingToken = getAuthorityToken()
+    if (existingToken) {
+      setUnlocked(true)
+    }
+
+    return () => {
+      if (trackingWsRef.current) {
+        try { trackingWsRef.current.close() } catch { /* silent */ }
+        trackingWsRef.current = null
+      }
+    }
+  }, [])
 
   useEffect(() => { if (unlocked) fetchCases() }, [severityFilter, statusFilter, unlocked])
 
-  function tryUnlock() {
-    if (pass === 'haven2024') { setUnlocked(true); setPassError(false) }
-    else { setPassError(true); setPass('') }
+  async function tryUnlock() {
+    setAuthLoading(true)
+    setPassError(false)
+    try {
+      const res = await fetch(`${API}/auth/authority-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          password: pass,
+          badge_number: 'PO-1091',
+          officer_name: dirOfficer.name || 'Protection Officer'
+        })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setAuthorityToken(data.access_token)
+        setUnlocked(true)
+        setPassError(false)
+      } else {
+        setPassError(true)
+        setPass('')
+      }
+    } catch {
+      setPassError(true)
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
+  function handleLock() {
+    clearAuthorityToken()
+    setUnlocked(false)
+    setPass('')
   }
 
   async function fetchCases() {
@@ -71,7 +160,7 @@ export default function AuthorityPage() {
       const params = new URLSearchParams()
       if (severityFilter) params.set('severity', severityFilter)
       if (statusFilter) params.set('status', statusFilter)
-      const res = await fetch(`${API}/cases?${params}`)
+      const res = await secureFetch(`/cases?${params}`)
       if (!res.ok) throw new Error('Server error')
       const data = await res.json()
       setCases(data.cases || [])
@@ -80,7 +169,10 @@ export default function AuthorityPage() {
 
   async function updateCaseStatus(caseId: string, status: string) {
     try {
-      const res = await fetch(`${API}/cases/${caseId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) })
+      const res = await secureFetch(`/cases/${caseId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status })
+      })
       if (!res.ok) throw new Error('Server error')
       fetchCases()
     } catch (e) {
@@ -88,7 +180,11 @@ export default function AuthorityPage() {
     }
   }
 
+
   const startLiveTracking = (c: SOSCase) => {
+    if (trackingWsRef.current) {
+      try { trackingWsRef.current.close() } catch { /* silent */ }
+    }
     setActiveLiveTrackCase(c)
     setLiveCoords(null)
     setTrackingConnected(false)
@@ -96,7 +192,9 @@ export default function AuthorityPage() {
     try {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const wsHost = API.replace(/^https?:\/\//, '') || 'localhost:8000'
-      const ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/track/${c.case_id}`)
+      const token = getAuthorityToken() || ''
+      const ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/track/${c.case_id}?token=${encodeURIComponent(token)}&role=subscriber`)
+      trackingWsRef.current = ws
       
       ws.onopen = () => setTrackingConnected(true)
       ws.onmessage = (evt) => {
@@ -119,11 +217,20 @@ export default function AuthorityPage() {
     }
   }
 
+  const closeLiveTracking = () => {
+    if (trackingWsRef.current) {
+      try { trackingWsRef.current.close() } catch { /* silent */ }
+      trackingWsRef.current = null
+    }
+    setActiveLiveTrackCase(null)
+    setLiveCoords(null)
+    setTrackingConnected(false)
+  }
+
   const dispatchCase = async (caseId: string, agency: 'ERSS_112' | 'NCW_HELPLINE' | 'SNEHA_CRISIS') => {
     try {
-      const res = await fetch(`${API}/authority/dispatch-webhook`, {
+      const res = await secureFetch('/authority/dispatch-webhook', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           case_id: caseId,
           agency_type: agency,
@@ -144,6 +251,135 @@ export default function AuthorityPage() {
     }
   }
 
+  // ── DIR Form-1 Generation ──
+  const generateDIRForm = async (c: SOSCase) => {
+    setDirFormCase(c)
+    setDirFormData(null)
+    setDirGenerating(true)
+    try {
+      const res = await secureFetch('/authority/generate-dir-form', {
+        method: 'POST',
+        body: JSON.stringify({
+          case_id: c.case_id,
+          officer_name: dirOfficer.name,
+          officer_designation: dirOfficer.designation,
+          station_name: dirOfficer.station,
+          district: dirOfficer.district
+        })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setDirFormData(data)
+      } else {
+        alert('Failed to generate DIR Form. Check backend connection.')
+      }
+    } catch {
+      alert('Network error generating DIR Form.')
+    } finally {
+      setDirGenerating(false)
+    }
+  }
+
+  const printDIRForm = () => {
+    const printWindow = window.open('', '_blank')
+    if (!printWindow || !dirFormData) return
+    printWindow.document.write(`
+      <html><head><title>DIR Form-1 — ${dirFormData.dir_form_number}</title>
+      <style>
+        body { font-family: 'Times New Roman', serif; max-width: 800px; margin: 40px auto; padding: 20px; color: #1a1a1a; line-height: 1.7; }
+        h1 { text-align: center; font-size: 18px; border-bottom: 2px solid #333; padding-bottom: 10px; }
+        h2 { font-size: 14px; background: #f0f0f0; padding: 6px 10px; margin-top: 20px; border-left: 4px solid #be185d; }
+        .field { margin: 8px 0; font-size: 13px; }
+        .field strong { display: inline-block; min-width: 200px; }
+        .report-body { white-space: pre-wrap; font-size: 13px; border: 1px solid #ccc; padding: 16px; border-radius: 6px; margin: 12px 0; background: #fafafa; }
+        .legal-badge { display: inline-block; background: #fee2e2; color: #dc2626; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; margin: 2px; }
+        .seal { text-align: center; margin-top: 40px; padding: 20px; border-top: 2px solid #333; font-size: 12px; }
+        @media print { body { margin: 20px; } }
+      </style></head><body>
+      <h1>DOMESTIC INCIDENT REPORT (DIR)<br/>Form-1 under Section 9(b) of PWDVA 2005</h1>
+      <h2>CASE REFERENCE</h2>
+      <div class="field"><strong>DIR Form Number:</strong> ${dirFormData.dir_form_number}</div>
+      <div class="field"><strong>Haven Case ID:</strong> ${dirFormData.case_id}</div>
+      <div class="field"><strong>Generated:</strong> ${new Date(dirFormData.generated_at).toLocaleString()}</div>
+      <div class="field"><strong>Officer:</strong> ${dirFormData.officer_name || 'N/A'} (${dirFormData.officer_designation || 'Protection Officer'})</div>
+      <div class="field"><strong>Station:</strong> ${dirFormData.station_name || 'N/A'}</div>
+      <div class="field"><strong>District:</strong> ${dirFormData.district || 'N/A'}</div>
+      <h2>CASE ASSESSMENT</h2>
+      <div class="field"><strong>Severity:</strong> ${(dirFormData.case_severity || 'unknown').toUpperCase()}</div>
+      <div class="field"><strong>Nature of Abuse:</strong> ${dirFormData.nature_of_abuse || 'N/A'}</div>
+      <div class="field"><strong>Immediate Danger:</strong> ${dirFormData.immediate_danger ? '⚠️ YES — IMMEDIATE RISK' : 'No immediate risk detected'}</div>
+      <div class="field"><strong>Location:</strong> ${dirFormData.location || 'N/A'}</div>
+      <div class="field"><strong>Summary:</strong> ${dirFormData.case_summary || 'N/A'}</div>
+      <div class="field"><strong>Victim Needs:</strong> ${(dirFormData.needs || []).join(', ') || 'N/A'}</div>
+      <h2>FORENSIC EVIDENCE</h2>
+      <div class="field"><strong>Evidence Available:</strong> ${dirFormData.has_forensic_evidence ? 'YES (SHA-256 Sealed)' : 'No'}</div>
+      ${dirFormData.evidence_hash ? '<div class="field"><strong>Evidence Hash:</strong> <code>' + dirFormData.evidence_hash + '</code></div>' : ''}
+      <h2>DOMESTIC INCIDENT REPORT</h2>
+      <div class="report-body">${dirFormData.dir_report_text}</div>
+      <h2>APPLICABLE LEGAL PROVISIONS</h2>
+      <div>${(dirFormData.legal_sections || []).map((s: string) => '<span class="legal-badge">' + s + '</span>').join(' ')}</div>
+      <h2>RELIEF RECOMMENDED</h2>
+      <div>${(dirFormData.relief_recommended || []).map((r: string) => '<span class="legal-badge">' + r + '</span>').join(' ')}</div>
+      <div class="seal">
+        <p><strong>HAVEN — Women Safety Intelligence Platform</strong></p>
+        <p>This DIR Form-1 was generated under PWDVA 2005 with digital forensic integrity.</p>
+        <p>Case ID: ${dirFormData.case_id} | DIR: ${dirFormData.dir_form_number}</p>
+      </div>
+      </body></html>
+    `)
+    printWindow.document.close()
+    setTimeout(() => printWindow.print(), 500)
+  }
+
+  // ── Discreet Dispatch for DV cases ──
+  const discreetDispatch = async (caseId: string, dispatchType: 'MAHILA_THANA' | 'PLAINCLOTHES' | 'PROTECTION_OFFICER' | 'OSC_SAKHI') => {
+    setDiscreetDispatching(caseId + dispatchType)
+    try {
+      const res = await secureFetch('/authority/discreet-dispatch', {
+        method: 'POST',
+        body: JSON.stringify({
+          case_id: caseId,
+          dispatch_type: dispatchType,
+          priority: 'HIGH',
+          dispatcher_notes: 'Discreet approach — domestic violence in shared household',
+          silent_approach: true
+        })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setDiscreetDispatchResult(data)
+      } else {
+        alert('Failed to dispatch. Check backend.')
+      }
+    } catch {
+      alert('Network error dispatching.')
+    } finally {
+      setDiscreetDispatching('')
+    }
+  }
+
+  // ── Domestic Risk Assessment ──
+  const getDomesticRiskScore = (c: SOSCase): { score: number; level: string; color: string; bg: string; flags: string[] } => {
+    const flags: string[] = []
+    let score = 0
+    const text = ((c.decoded_text || '') + ' ' + (c.nature_of_abuse || '') + ' ' + (c.summary || '')).toLowerCase()
+    if (c.immediate_danger) { score += 3; flags.push('Immediate danger') }
+    if (c.severity === 'critical') { score += 3; flags.push('Critical severity') }
+    else if (c.severity === 'high') { score += 2; flags.push('High severity') }
+    if (/kill|murder|death|threat|knife|weapon|strangle|choke/i.test(text)) { score += 3; flags.push('Lethal threats detected') }
+    if (/child|children|baby|pregnant|minor/i.test(text)) { score += 2; flags.push('Children/pregnancy involved') }
+    if (/confine|lock|trap|imprison|room/i.test(text)) { score += 2; flags.push('Confinement indicated') }
+    if (/husband|in-law|sasural|pati|ghar/i.test(text)) { score += 1; flags.push('Domestic/household abuse') }
+    if (/burn|acid|dowry|dahej/i.test(text)) { score += 2; flags.push('Dowry/burn violence') }
+    if (/sexual|rape|marital rape|force/i.test(text)) { score += 2; flags.push('Sexual violence') }
+    if (/repeat|again|always|daily|everyday/i.test(text)) { score += 1; flags.push('Pattern of repeated abuse') }
+    score = Math.min(score, 10)
+    if (score >= 8) return { score, level: 'EXTREME', color: '#991b1b', bg: '#fee2e2', flags }
+    if (score >= 5) return { score, level: 'HIGH', color: '#c2410c', bg: '#fed7aa', flags }
+    if (score >= 3) return { score, level: 'MODERATE', color: '#a16207', bg: '#fef9c3', flags }
+    return { score, level: 'LOW', color: '#15803d', bg: '#dcfce7', flags }
+  }
+
   async function decodeImage(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return
     setDecoding(true); setDecodeResult(''); setDecomposed(null)
@@ -153,17 +389,17 @@ export default function AuthorityPage() {
       const b64 = result.split(',')[1]
       setDecodeImg(result)
       try {
-        const decRes = await fetch(`${API}/decode`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image_base64: b64 }) })
+        const decRes = await secureFetch('/decode', { method: 'POST', body: JSON.stringify({ image_base64: b64 }) })
         if (!decRes.ok) throw new Error('Decode server error')
         const decData = await decRes.json()
         const msg: string = decData.decoded_message || ''
         setDecodeResult(msg)
         if (msg && msg !== 'No hidden message found') {
-          const decompRes = await fetch(`${API}/text-decomposition`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: msg }) })
+          const decompRes = await secureFetch('/text-decomposition', { method: 'POST', body: JSON.stringify({ text: msg }) })
           if (decompRes.ok) {
             const decompData = await decompRes.json()
             setDecomposed(decompData)
-            await fetch(`${API}/save-extracted-data`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decoded_text: msg, ...decompData }) })
+            await secureFetch('/save-extracted-data', { method: 'POST', body: JSON.stringify({ decoded_text: msg, ...decompData }) })
           }
         }
       } catch { setDecodeResult('Error decoding image.') }
@@ -176,8 +412,8 @@ export default function AuthorityPage() {
     if (!culpritDesc.trim()) return
     setSearching(true); setMatches([]); setSearchType('')
     try {
-      const res = await fetch(`${API}/culprit/find-match`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const res = await secureFetch('/culprit/find-match', {
+        method: 'POST',
         body: JSON.stringify({ description: culpritDesc, top_n: 10, search_mode: searchMode, min_score: searchMode === 'description' ? 0.75 : 0 })
       })
       if (!res.ok) throw new Error('Search server error')
@@ -191,7 +427,10 @@ export default function AuthorityPage() {
     if (!reportForm.physical_description || !reportForm.behavioral_traits) return
     setReporting(true); setReportMsg('')
     try {
-      const res = await fetch(`${API}/culprit/report`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: reportForm.name || 'Unknown', physical_description: reportForm.physical_description, behavioral_traits: reportForm.behavioral_traits, location: reportForm.location || '', reporter_id: 'authority' }) })
+      const res = await secureFetch('/culprit/report', {
+        method: 'POST',
+        body: JSON.stringify({ name: reportForm.name || 'Unknown', physical_description: reportForm.physical_description, behavioral_traits: reportForm.behavioral_traits, location: reportForm.location || '', reporter_id: 'authority' })
+      })
       if (!res.ok) throw new Error('Report server error')
       const data = await res.json()
       if (data.culprit_id) { setReportMsg(`✓ Registered: ${data.culprit_id}`); setReportForm({ name: '', physical_description: '', behavioral_traits: '', location: '' }) }
@@ -221,7 +460,9 @@ export default function AuthorityPage() {
             style={{ width: '100%', padding: '12px 14px', borderRadius: 10, border: passError ? '2px solid #dc2626' : '2px solid #e2d6e0', fontSize: '0.9rem', outline: 'none', marginBottom: 8, boxSizing: 'border-box' }}
           />
           {passError && <p style={{ fontSize: '0.75rem', color: '#dc2626', marginBottom: 8 }}>❌ Wrong code. Try again.</p>}
-          <button onClick={tryUnlock} className="btn-primary" style={{ width: '100%', marginTop: 4, padding: '12px 20px' }}>Enter Dashboard</button>
+          <button onClick={tryUnlock} disabled={authLoading} className="btn-primary" style={{ width: '100%', marginTop: 4, padding: '12px 20px' }}>
+            {authLoading ? 'Verifying...' : 'Enter Dashboard'}
+          </button>
           <Link href="/"><p style={{ marginTop: 14, fontSize: '0.75rem', color: '#8b6b7d', cursor: 'pointer' }}>← Back to Haven</p></Link>
         </div>
       </div>
@@ -244,9 +485,10 @@ export default function AuthorityPage() {
           <button onClick={fetchCases} style={{ background: 'none', border: '1px solid #f472b6', borderRadius: 8, padding: '7px 10px', cursor: 'pointer', color: '#f472b6', display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.75rem' }}>
             <RefreshCw size={13} /><span>Refresh</span>
           </button>
-          <button onClick={() => setUnlocked(false)} style={{ background: 'none', border: '1px solid #8b6b7d', borderRadius: 8, padding: '7px 10px', cursor: 'pointer', color: '#8b6b7d', fontSize: '0.75rem' }}>Lock</button>
+          <button onClick={handleLock} style={{ background: 'none', border: '1px solid #8b6b7d', borderRadius: 8, padding: '7px 10px', cursor: 'pointer', color: '#8b6b7d', fontSize: '0.75rem' }}>Lock</button>
         </div>
       </div>
+
 
       {/* Tabs */}
       <div style={{ background: '#2d1b2e', padding: '0 16px', display: 'flex', gap: 0, overflowX: 'auto' }}>
@@ -290,6 +532,7 @@ export default function AuthorityPage() {
                 {cases.map(c => {
                   const sev = c.severity || 'unknown'
                   const cfg = sevCfg[sev] || { bg: '#f3f4f6', text: '#6b7280', icon: null }
+                  const risk = getDomesticRiskScore(c)
                   return (
                     <div key={c.case_id} style={{ background: 'white', borderRadius: 14, padding: 'clamp(14px,3vw,22px)', border: '1px solid #e2d6e0', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10 }}>
@@ -297,6 +540,12 @@ export default function AuthorityPage() {
                           <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
                             <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: '#8b6b7d', background: '#f8f4f6', padding: '2px 7px', borderRadius: 4 }}>{c.case_id}</span>
                             <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: '0.7rem', fontWeight: 600, padding: '2px 8px', borderRadius: 50, background: cfg.bg, color: cfg.text }}>{cfg.icon}{sev.toUpperCase()}</span>
+                            
+                            {/* Domestic Violence Lethality Risk Badge */}
+                            <span style={{ fontSize: '0.68rem', background: risk.bg, color: risk.color, padding: '2px 8px', borderRadius: 50, fontWeight: 800, display: 'flex', alignItems: 'center', gap: 3 }}>
+                              <ShieldAlert size={11} /> DV RISK: {risk.level} ({risk.score}/10)
+                            </span>
+
                             {c.trigger_type === 'voice_code' ? (
                               <span style={{ fontSize: '0.68rem', background: 'rgba(168,85,247,0.15)', color: '#7c3aed', padding: '2px 8px', borderRadius: 50, fontWeight: 700 }}>🎙 VOICE SOS</span>
                             ) : c.trigger_type === 'panic' ? (
@@ -307,6 +556,18 @@ export default function AuthorityPage() {
                             {c.immediate_danger && <span style={{ fontSize: '0.68rem', background: '#fee2e2', color: '#dc2626', padding: '2px 8px', borderRadius: 50, fontWeight: 700 }}>⚠️ DANGER</span>}
                             <span style={{ fontSize: '0.68rem', background: '#f3f4f6', color: '#6b7280', padding: '2px 8px', borderRadius: 50 }}>{c.status}</span>
                           </div>
+
+                          {/* Risk Indicator Flags */}
+                          {risk.flags.length > 0 && (
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
+                              {risk.flags.map((fl, idx) => (
+                                <span key={idx} style={{ fontSize: '0.62rem', background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', padding: '1px 6px', borderRadius: 4, fontWeight: 600 }}>
+                                  • {fl}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
                           <p style={{ fontSize: 'clamp(0.8rem, 2.5vw, 0.88rem)', color: '#1a0a12', lineHeight: 1.6, marginBottom: 6 }}>
                             {c.decoded_text?.slice(0, 180)}{(c.decoded_text?.length || 0) > 180 ? '...' : ''}
                           </p>
@@ -332,8 +593,15 @@ export default function AuthorityPage() {
                                 )}
                                 {c.evidence.image_base64 && (
                                   <div>
-                                    <div style={{ fontSize: '0.68rem', color: '#701a75', fontWeight: 600, marginBottom: 2 }}>📸 Scene Snapshot:</div>
-                                    <img src={c.evidence.image_base64} alt="Forensic snapshot" style={{ width: 54, height: 40, objectFit: 'cover', borderRadius: 6, border: '1px solid #f0abfc' }} />
+                                    <div style={{ fontSize: '0.68rem', color: '#701a75', fontWeight: 600, marginBottom: 4 }}>📸 Scene Snapshot:</div>
+                                    <a href={c.evidence.image_base64} target="_blank" rel="noopener noreferrer" title="Click to view full size">
+                                      <img
+                                        src={c.evidence.image_base64}
+                                        alt="Forensic snapshot"
+                                        style={{ width: 120, height: 90, objectFit: 'cover', borderRadius: 8, border: '2px solid #f0abfc', display: 'block', cursor: 'zoom-in' }}
+                                      />
+                                    </a>
+                                    <div style={{ fontSize: '0.58rem', color: '#a21caf', marginTop: 2 }}>Click to enlarge</div>
                                   </div>
                                 )}
                               </div>
@@ -341,23 +609,96 @@ export default function AuthorityPage() {
                           )}
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end', flexShrink: 0 }}>
-                          <span style={{ fontSize: '0.68rem', color: '#8b6b7d' }}>{c.created_at ? new Date(c.created_at).toLocaleDateString() : ''}</span>
-                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {/* Case Time — IST (New Delhi) */}
+                          {c.created_at && (() => {
+                            const d = new Date(c.created_at)
+                            const istTime = new Intl.DateTimeFormat('en-IN', {
+                              timeZone: 'Asia/Kolkata',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              second: '2-digit',
+                              hour12: true,
+                            }).format(d)
+                            const istDate = new Intl.DateTimeFormat('en-IN', {
+                              timeZone: 'Asia/Kolkata',
+                              day: '2-digit',
+                              month: 'short',
+                              year: 'numeric',
+                              weekday: 'short',
+                            }).format(d)
+                            return (
+                              <div style={{ textAlign: 'right' }}>
+                                <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#be185d', letterSpacing: '0.01em' }}>
+                                  🕐 {istTime}
+                                </div>
+                                <div style={{ fontSize: '0.65rem', color: '#8b6b7d' }}>
+                                  {istDate}
+                                </div>
+                                <div style={{ fontSize: '0.58rem', color: '#b45309', fontWeight: 600, marginTop: 1 }}>
+                                  🇮🇳 IST (New Delhi)
+                                </div>
+                              </div>
+                            )
+                          })()}
+                          
+                          {/* Primary Actions Row */}
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                             <button
                               onClick={() => startLiveTracking(c)}
                               style={{ fontSize: '0.7rem', padding: '4px 10px', borderRadius: 8, background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', cursor: 'pointer', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4 }}
                             >
                               📡 Live GPS
                             </button>
+                            
+                            {/* PWDVA DIR Form-1 Generator Button */}
+                            <button
+                              onClick={() => generateDIRForm(c)}
+                              style={{ fontSize: '0.7rem', padding: '4px 10px', borderRadius: 8, background: '#fdf2f8', color: '#be185d', border: '1px solid #fbcfe8', cursor: 'pointer', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4 }}
+                            >
+                              <FileText size={12} /> 📄 DIR Form-1 (PWDVA)
+                            </button>
+
                             <button
                               onClick={() => dispatchCase(c.case_id, 'ERSS_112')}
                               style={{ fontSize: '0.7rem', padding: '4px 10px', borderRadius: 8, background: dispatchStatusMap[c.case_id] ? '#dcfce7' : '#fee2e2', color: dispatchStatusMap[c.case_id] ? '#15803d' : '#dc2626', border: 'none', cursor: 'pointer', fontWeight: 700 }}
                             >
-                              {dispatchStatusMap[c.case_id] ? '✅ ERSS 112 Dispatched' : '🚨 Dispatch 112'}
+                              {dispatchStatusMap[c.case_id] ? '✅ ERSS 112 Dispatched' : '🚨 112 Siren'}
                             </button>
+                          </div>
+
+                          {/* Domestic Violence Discreet Dispatch Actions Row */}
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end', marginTop: 2 }}>
+                            <button
+                              onClick={() => discreetDispatch(c.case_id, 'MAHILA_THANA')}
+                              disabled={discreetDispatching === c.case_id + 'MAHILA_THANA'}
+                              title="Send Plainclothes Women Police in Unmarked Car"
+                              style={{ fontSize: '0.67rem', padding: '3px 8px', borderRadius: 6, background: '#f5f3ff', color: '#6d28d9', border: '1px solid #ddd6fe', cursor: 'pointer', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3 }}
+                            >
+                              <UserCheck size={11} /> 🤫 Mahila Police (No Siren)
+                            </button>
+                            <button
+                              onClick={() => discreetDispatch(c.case_id, 'PROTECTION_OFFICER')}
+                              disabled={discreetDispatching === c.case_id + 'PROTECTION_OFFICER'}
+                              title="Alert PWDVA Protection Officer"
+                              style={{ fontSize: '0.67rem', padding: '3px 8px', borderRadius: 6, background: '#fdf4ff', color: '#a21caf', border: '1px solid #f5d0fe', cursor: 'pointer', fontWeight: 600 }}
+                            >
+                              🏠 Protection Officer
+                            </button>
+                            <button
+                              onClick={() => discreetDispatch(c.case_id, 'OSC_SAKHI')}
+                              disabled={discreetDispatching === c.case_id + 'OSC_SAKHI'}
+                              title="Emergency Safe Shelter Transit"
+                              style={{ fontSize: '0.67rem', padding: '3px 8px', borderRadius: 6, background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', cursor: 'pointer', fontWeight: 600 }}
+                            >
+                              🛟 Sakhi Shelter Van
+                            </button>
+                          </div>
+
+                          {/* Status buttons */}
+                          <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
                             {(['in_progress', 'resolved'] as string[]).filter(s => s !== c.status).map(s => (
-                              <button key={s} onClick={() => updateCaseStatus(c.case_id, s)} style={{ fontSize: '0.7rem', padding: '4px 10px', borderRadius: 8, background: s === 'resolved' ? '#dcfce7' : '#fef9c3', color: s === 'resolved' ? '#15803d' : '#a16207', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
-                                {s.replace('_', ' ')}
+                              <button key={s} onClick={() => updateCaseStatus(c.case_id, s)} style={{ fontSize: '0.67rem', padding: '3px 8px', borderRadius: 6, background: s === 'resolved' ? '#dcfce7' : '#fef9c3', color: s === 'resolved' ? '#15803d' : '#a16207', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
+                                Mark {s.replace('_', ' ')}
                               </button>
                             ))}
                           </div>
@@ -523,7 +864,7 @@ export default function AuthorityPage() {
                 </h3>
               </div>
               <button
-                onClick={() => setActiveLiveTrackCase(null)}
+                onClick={closeLiveTracking}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}
               >
                 <X size={20} />
@@ -575,6 +916,190 @@ export default function AuthorityPage() {
                 🚨 Fast Dispatch 112
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── DIR Form-1 Modal (PWDVA 2005) ── */}
+      {dirFormCase && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 99999, padding: 16 }}>
+          <div style={{ background: 'white', borderRadius: 20, padding: '24px 28px', maxWidth: 680, width: '100%', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, borderBottom: '1px solid #fce7f3', paddingBottom: 12 }}>
+              <div>
+                <span style={{ fontSize: '0.68rem', fontWeight: 800, color: '#be185d', background: '#fdf2f8', padding: '2px 8px', borderRadius: 4, textTransform: 'uppercase' }}>
+                  PWDVA 2005 · Section 9(b)
+                </span>
+                <h3 style={{ fontFamily: 'Georgia', fontSize: '1.25rem', color: '#1a0a12', margin: '4px 0 0' }}>
+                  Domestic Incident Report (DIR Form-1)
+                </h3>
+              </div>
+              <button
+                onClick={() => { setDirFormCase(null); setDirFormData(null) }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Officer details inputs */}
+            {!dirFormData && (
+              <div style={{ background: '#fdf4ff', border: '1px solid #f0abfc', borderRadius: 12, padding: 16, marginBottom: 16 }}>
+                <p style={{ fontSize: '0.8rem', fontWeight: 700, color: '#86198f', marginBottom: 10 }}>
+                  👮 Protection / Police Officer Details for Court Filing:
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <input
+                    placeholder="Officer Name"
+                    value={dirOfficer.name}
+                    onChange={e => setDirOfficer(prev => ({ ...prev, name: e.target.value }))}
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #d8b4fe', fontSize: '0.8rem' }}
+                  />
+                  <input
+                    placeholder="Designation (e.g. Protection Officer / Sub-Inspector)"
+                    value={dirOfficer.designation}
+                    onChange={e => setDirOfficer(prev => ({ ...prev, designation: e.target.value }))}
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #d8b4fe', fontSize: '0.8rem' }}
+                  />
+                  <input
+                    placeholder="Police Station / Mahila Thana"
+                    value={dirOfficer.station}
+                    onChange={e => setDirOfficer(prev => ({ ...prev, station: e.target.value }))}
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #d8b4fe', fontSize: '0.8rem' }}
+                  />
+                  <input
+                    placeholder="District / City"
+                    value={dirOfficer.district}
+                    onChange={e => setDirOfficer(prev => ({ ...prev, district: e.target.value }))}
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #d8b4fe', fontSize: '0.8rem' }}
+                  />
+                </div>
+                <button
+                  onClick={() => generateDIRForm(dirFormCase)}
+                  disabled={dirGenerating}
+                  className="btn-primary"
+                  style={{ width: '100%', marginTop: 12, padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                >
+                  <FileText size={16} />
+                  {dirGenerating ? 'Drafting Official DIR Form via Legal AI...' : 'Generate Official DIR Form-1'}
+                </button>
+              </div>
+            )}
+
+            {/* Generated DIR Preview */}
+            {dirFormData && (
+              <div>
+                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: 18, marginBottom: 16, fontSize: '0.83rem', color: '#1e293b', maxHeight: 380, overflowY: 'auto', lineHeight: 1.6 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #cbd5e1', paddingBottom: 8, marginBottom: 12 }}>
+                    <div>
+                      <strong>DIR Form No:</strong> <span style={{ color: '#be185d' }}>{dirFormData.dir_form_number}</span>
+                    </div>
+                    <div>
+                      <strong>Generated:</strong> {new Date(dirFormData.generated_at).toLocaleString()}
+                    </div>
+                  </div>
+
+                  <div style={{ marginBottom: 10 }}>
+                    <strong>Officer:</strong> {dirFormData.officer_name || 'Protection Officer'} ({dirFormData.officer_designation}) | <strong>Station:</strong> {dirFormData.station_name || 'N/A'}
+                  </div>
+
+                  <div style={{ marginBottom: 10 }}>
+                    <strong>Applicable Legal Sections:</strong>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                      {dirFormData.legal_sections.map((s, idx) => (
+                        <span key={idx} style={{ background: '#fee2e2', color: '#991b1b', padding: '2px 8px', borderRadius: 4, fontSize: '0.72rem', fontWeight: 700 }}>
+                          ⚖️ {s}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ whiteSpace: 'pre-wrap', fontFamily: 'Georgia, serif', background: 'white', padding: 14, borderRadius: 8, border: '1px solid #e2e8f0', marginTop: 12, fontSize: '0.82rem' }}>
+                    {dirFormData.dir_report_text}
+                  </div>
+
+                  {dirFormData.has_forensic_evidence && (
+                    <div style={{ marginTop: 12, padding: 10, background: '#fdf4ff', border: '1px solid #f0abfc', borderRadius: 8, fontSize: '0.75rem', color: '#86198f' }}>
+                      <strong>🔒 Forensic Digital Evidence Seal:</strong><br />
+                      <code>SHA-256: {dirFormData.evidence_hash}</code> (Digitally verified for Magistrate Court submission)
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button
+                    onClick={printDIRForm}
+                    style={{ flex: 1, background: '#be185d', color: 'white', border: 'none', padding: '12px', borderRadius: 10, fontWeight: 700, fontSize: '0.88rem', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                  >
+                    <Printer size={16} /> 🖨️ Print / Save Court-Ready PDF
+                  </button>
+                  <button
+                    onClick={() => setDirFormData(null)}
+                    style={{ background: '#f3f4f6', color: '#4b5563', border: '1px solid #d1d5db', padding: '12px 18px', borderRadius: 10, fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer' }}
+                  >
+                    Edit Details
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Discreet Plainclothes Dispatch Result Modal ── */}
+      {discreetDispatchResult && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 99999, padding: 16 }}>
+          <div style={{ background: 'white', borderRadius: 20, padding: 24, maxWidth: 480, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: '1.4rem' }}>🤫</span>
+                <div>
+                  <h3 style={{ fontFamily: 'Georgia', fontSize: '1.15rem', color: '#1a0a12', margin: 0 }}>
+                    Discreet Response Dispatched
+                  </h3>
+                  <div style={{ fontSize: '0.72rem', color: '#6d28d9', fontWeight: 700 }}>
+                    SILENT ENTRY PROTOCOL ACTIVE (NO SIRENS)
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setDiscreetDispatchResult(null)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 12, padding: 16, marginBottom: 16, fontSize: '0.83rem', color: '#4c1d95' }}>
+              <div style={{ marginBottom: 6 }}>
+                <strong>Dispatch ID:</strong> <code>{discreetDispatchResult.dispatch_id}</code>
+              </div>
+              <div style={{ marginBottom: 6 }}>
+                <strong>Responding Agency:</strong> {discreetDispatchResult.response_protocol.agency_name}
+              </div>
+              <div style={{ marginBottom: 6 }}>
+                <strong>Tactical Approach:</strong> {discreetDispatchResult.response_protocol.approach}
+              </div>
+              <div style={{ marginBottom: 6 }}>
+                <strong>Vehicle:</strong> {discreetDispatchResult.response_protocol.vehicle}
+              </div>
+              <div style={{ marginBottom: 6 }}>
+                <strong>Siren / Lights:</strong> {discreetDispatchResult.response_protocol.siren ? 'Active' : '🚫 SILENT / OFF (Abuser Protection)'}
+              </div>
+              <div style={{ marginBottom: 6 }}>
+                <strong>Estimated Arrival:</strong> ⏱️ ~{discreetDispatchResult.response_protocol.estimated_minutes} minutes
+              </div>
+              <div>
+                <strong>Direct Control Line:</strong> 📞 {discreetDispatchResult.response_protocol.contact_number}
+              </div>
+            </div>
+
+            <button
+              onClick={() => setDiscreetDispatchResult(null)}
+              className="btn-primary"
+              style={{ width: '100%', padding: '11px 16px' }}
+            >
+              Understood / Monitor Live Response
+            </button>
           </div>
         </div>
       )}

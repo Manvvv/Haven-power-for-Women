@@ -4,7 +4,8 @@ const isProtectedRoute = createRouteMatcher([
   '/dashboard(.*)',
   '/sos(.*)',
   '/therapy(.*)',
-  '/legal(.*)'
+  '/legal(.*)',
+  '/voice-sos(.*)',
 ])
 
 export default clerkMiddleware(async (auth, req) => {
@@ -12,6 +13,7 @@ export default clerkMiddleware(async (auth, req) => {
     await auth.protect()
   }
 })
+
 
 export const config = {
   matcher: [
