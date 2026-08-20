@@ -105,7 +105,7 @@ CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "")
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "")
 HF_API_KEY = os.getenv("HF_API_KEY", "")
 
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 GEMINI_EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 HF_IMG_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
@@ -126,7 +126,7 @@ def call_gemini(prompt: str, system: str = "") -> str:
             timeout=30,
         )
         if resp.status_code != 200:
-            logger.error(f"Gemini upstream error code {resp.status_code}")
+            logger.error(f"Gemini upstream error code {resp.status_code}: {resp.text}")
             raise HTTPException(status_code=502, detail="AI Service temporarily unavailable. Please try again later.")
         return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
     except HTTPException:
@@ -136,24 +136,45 @@ def call_gemini(prompt: str, system: str = "") -> str:
         raise HTTPException(status_code=502, detail="AI Service connection timeout.")
 
 
-def call_groq(messages: list, model: str = "llama-3.3-70b-versatile", max_tokens: int = 1024) -> str:
-    """Call Groq API with sanitized error handling."""
-    try:
-        resp = requests.post(
-            GROQ_URL,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={"model": model, "messages": messages, "max_tokens": max_tokens},
-            timeout=30,
-        )
-        if resp.status_code != 200:
-            logger.error(f"Groq upstream error code {resp.status_code}")
-            raise HTTPException(status_code=502, detail="Language model service is currently unavailable.")
-        return resp.json()["choices"][0]["message"]["content"]
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Groq connection error: {str(e)}")
-        raise HTTPException(status_code=502, detail="Language model service timeout.")
+def call_groq(messages: list, model: str = "openai/gpt-oss-120b", max_tokens: int = 1024) -> str:
+    """Call Groq API with sanitized error handling and automatic model/Gemini fallback."""
+    candidate_models = [model]
+    for fallback in ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"]:
+        if fallback not in candidate_models:
+            candidate_models.append(fallback)
+
+    last_error = None
+    if GROQ_API_KEY:
+        for candidate in candidate_models:
+            try:
+                resp = requests.post(
+                    GROQ_URL,
+                    headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                    json={"model": candidate, "messages": messages, "max_tokens": max_tokens},
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    return resp.json()["choices"][0]["message"]["content"]
+                logger.warning(f"Groq upstream error code {resp.status_code} for model {candidate}: {resp.text}")
+                last_error = f"Groq status {resp.status_code}"
+            except Exception as e:
+                logger.warning(f"Groq error with model {candidate}: {str(e)}")
+                last_error = str(e)
+
+    # Fallback to Gemini if Groq fails or key is missing
+    if GEMINI_API_KEY:
+        try:
+            logger.info("Falling back to Gemini for language generation...")
+            system_parts = [m["content"] for m in messages if m.get("role") == "system"]
+            user_parts = [m["content"] for m in messages if m.get("role") in ["user", "assistant"]]
+            system_str = "\n\n".join(system_parts)
+            prompt_str = "\n\n".join(user_parts)
+            return call_gemini(prompt=prompt_str, system=system_str)
+        except Exception as e:
+            logger.error(f"Gemini fallback failed: {str(e)}")
+
+    logger.error(f"All LLM providers failed. Last error: {last_error}")
+    raise HTTPException(status_code=502, detail="Language model service is currently unavailable.")
 
 
 def get_embedding(text: str) -> list:
@@ -251,52 +272,87 @@ def upload_to_cloudinary(image_bytes: bytes, public_id: str = None) -> str:
 # ─── Steganography ────────────────────────────────────────
 
 def encode_message_in_image(image_bytes: bytes, message: str) -> bytes:
+    """Encode a hidden message into image using LSB steganography. Always outputs PNG."""
     try:
         from PIL import Image
+        import numpy as np
+
+        # Always convert to RGB PNG first — JPEG would destroy LSB on re-open
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        encoded_msg = message + "<<END>>"
+
+        END_MARKER = "<<END>>"
+        encoded_msg = message + END_MARKER
         bits = ''.join(format(ord(c), '08b') for c in encoded_msg)
-        pixels = list(img.getdata())
-        if len(bits) > len(pixels) * 3:
-            return image_bytes
-        new_pixels = []
-        bit_idx = 0
-        for pixel in pixels:
-            new_pixel = list(pixel)
-            for channel in range(3):
-                if bit_idx < len(bits):
-                    new_pixel[channel] = (new_pixel[channel] & ~1) | int(bits[bit_idx])
-                    bit_idx += 1
-            new_pixels.append(tuple(new_pixel))
-        img.putdata(new_pixels)
+
+        img_array = np.array(img, dtype=np.uint8)
+        flat = img_array.flatten()
+
+        if len(bits) > len(flat):
+            logger.warning("Message too long for image; returning image unchanged")
+            # Still save as PNG even in fallback
+            out = io.BytesIO()
+            img.save(out, format="PNG")
+            return out.getvalue()
+
+        flat_copy = flat.copy()
+        for i, bit in enumerate(bits):
+            flat_copy[i] = (flat_copy[i] & 0xFE) | int(bit)
+
+        result_img = Image.fromarray(flat_copy.reshape(img_array.shape), "RGB")
         output = io.BytesIO()
-        img.save(output, format="PNG")
+        result_img.save(output, format="PNG")  # MUST be lossless PNG
         return output.getvalue()
     except Exception as e:
         logger.warning(f"Encode steganography error: {e}")
-        return image_bytes
+        # Fallback: re-save as PNG to at least not return JPEG
+        try:
+            from PIL import Image
+            img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            out = io.BytesIO()
+            img.save(out, format="PNG")
+            return out.getvalue()
+        except Exception:
+            return image_bytes
 
 
 def decode_message_from_image(image_bytes: bytes) -> str:
+    """Decode hidden LSB steganography message from image bytes."""
     try:
         from PIL import Image
-        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        pixels = list(img.getdata())
-        bits = []
-        for pixel in pixels:
-            for channel in range(3):
-                bits.append(str(pixel[channel] & 1))
+        import numpy as np
+
+        img = Image.open(io.BytesIO(image_bytes))
+
+        # If JPEG or any lossy format, steganography bits are destroyed — warn early
+        fmt = img.format or "UNKNOWN"
+        if fmt in ("JPEG", "JPG", "WEBP"):
+            logger.warning(f"Decode attempted on lossy format: {fmt}. LSB bits may be corrupted.")
+
+        img = img.convert("RGB")
+        img_array = np.array(img, dtype=np.uint8)
+        flat = img_array.flatten()
+
+        # Extract LSBs
+        bits = [str(b & 1) for b in flat]
+
+        END_MARKER = "<<END>>"
+        END_MARKER_LEN = len(END_MARKER)  # = 7
+
         chars = []
         for i in range(0, len(bits) - 7, 8):
-            byte_val = int(''.join(bits[i:i+8]), 2)
+            byte_val = int(''.join(bits[i:i + 8]), 2)
             if byte_val == 0:
                 break
             chars.append(chr(byte_val))
-            if ''.join(chars).endswith('<<END>>'):
-                return ''.join(chars)[:-7]
+            joined = ''.join(chars)
+            if joined.endswith(END_MARKER):
+                return joined[:-END_MARKER_LEN]
+
         return "No hidden message found"
     except Exception as e:
+        logger.error(f"Decode steganography error: {str(e)}")
         return f"Decode error: {str(e)}"
+
 
 
 def serialize_doc(doc: dict) -> dict:
@@ -501,7 +557,7 @@ def text_generation(
     # Delimit user inputs to prevent prompt injection
     user_prompt = f"### USER KEYWORDS ###\n{keywords}\n### CONTEXT ###\n{context}"
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user_prompt}]
-    result = call_groq(messages, model="llama-3.3-70b-versatile")
+    result = call_groq(messages)
     return {"expanded_message": result.strip()}
 
 
@@ -802,7 +858,7 @@ def legal_query(
         },
         {"role": "user", "content": f"Legal question: {question}"}
     ]
-    answer = call_groq(messages, model="llama-3.3-70b-versatile")
+    answer = call_groq(messages)
     return {"answer": answer, "sources": [c.get("source", "") for c in chunks]}
 
 
@@ -897,7 +953,7 @@ NEVER write more than 3 sentences. NEVER write multiple paragraphs."""
         }
     ] + history + [{"role": "user", "content": f"### USER STATEMENT ###\n{message}"}]
 
-    response = call_groq(messages, model="llama-3.3-70b-versatile", max_tokens=150)
+    response = call_groq(messages, max_tokens=150)
     session_id = session_id or f"SESSION-{user_id}-{int(time.time())}"
 
     if therapy_collection is not None:
@@ -1578,7 +1634,7 @@ def generate_dir_form(
         {"role": "user", "content": f"Case Data: {json.dumps(serialize_doc(case_data))}"}
     ]
 
-    dir_report_text = call_groq(messages=messages, model="llama-3.3-70b-versatile", max_tokens=800)
+    dir_report_text = call_groq(messages=messages, max_tokens=800)
     dir_form_number = f"DIR-{payload.case_id}-{int(time.time())}"
 
     response_doc = {

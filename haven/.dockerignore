@@ -1,0 +1,16 @@
+.venv
+.venv311
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+scratch/
+node_modules
+.next
+.git
+.gitignore
+.cursor
+.vscode
+*.log
+.DS_Store
+Thumbs.db

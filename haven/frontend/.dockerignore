@@ -1,0 +1,10 @@
+node_modules
+.next
+.git
+.gitignore
+.cursor
+.vscode
+*.log
+.DS_Store
+Thumbs.db
+tsconfig.tsbuildinfo
