@@ -281,6 +281,7 @@ export default function VoiceSOSPage() {
   const streamIntervalRef = useRef<any>(null)
   const wakeLockRef = useRef<any>(null)
   const isMountedRef = useRef<boolean>(true)
+  const isTriggeringRef = useRef<boolean>(false)
   
   // --- Initialization ---
   useEffect(() => {
@@ -782,7 +783,7 @@ export default function VoiceSOSPage() {
 
   // --- Speech Recognition Logic ---
   const startListening = () => {
-    if (!isSupported) return
+    if (!isSupported || isTriggeringRef.current) return
     
     // Request permissions first if needed
     if (micPermission !== 'granted') {
@@ -804,6 +805,8 @@ export default function VoiceSOSPage() {
     }
 
     recognition.onresult = async (event: any) => {
+      if (isTriggeringRef.current) return
+
       let interimTranscript = ''
       let finalTranscript = ''
 
@@ -818,7 +821,7 @@ export default function VoiceSOSPage() {
       const newestSpeech = (finalTranscript + ' ' + interimTranscript).trim()
       setTranscript(newestSpeech)
 
-      if (newestSpeech) {
+      if (newestSpeech && !isTriggeringRef.current) {
         // Accumulate into rolling speech buffer (keeps last 80 words spoken across pauses)
         const newWords = normalizeText(newestSpeech).split(' ').filter(Boolean)
         const combinedWords = [...accumulatedSpeechRef.current, ...newWords]
@@ -837,10 +840,10 @@ export default function VoiceSOSPage() {
 
     recognition.onend = () => {
       if (isMountedRef.current) setIsListening(false)
-      // Auto-restart if still enabled and component is mounted
-      if (isEnabledRef.current && isMountedRef.current) {
+      // Auto-restart if still enabled, mounted, and not currently triggering SOS
+      if (isEnabledRef.current && isMountedRef.current && !isTriggeringRef.current) {
         setTimeout(() => {
-          if (isEnabledRef.current && isMountedRef.current) {
+          if (isEnabledRef.current && isMountedRef.current && !isTriggeringRef.current) {
             startListening()
           }
         }, 1200)
@@ -857,13 +860,23 @@ export default function VoiceSOSPage() {
 
   const stopListening = () => {
     if (recognitionRef.current) {
-      recognitionRef.current.stop()
+      try {
+        recognitionRef.current.onend = null
+        recognitionRef.current.onerror = null
+        recognitionRef.current.onresult = null
+        recognitionRef.current.stop()
+      } catch (e) {
+        // silent
+      }
+      recognitionRef.current = null
     }
     setIsListening(false)
     releaseWakeLock()
   }
 
   const handleRecognizedText = async (text: string, fullAccumulatedText: string = '') => {
+    if (isTriggeringRef.current) return
+
     const targetHash = safeWordHash || (typeof window !== 'undefined' ? localStorage.getItem('haven_voice_safehash') : '') || ''
     const targetText = safeWordText || (typeof window !== 'undefined' ? localStorage.getItem('haven_voice_safeword') : '') || ''
 
@@ -922,6 +935,8 @@ export default function VoiceSOSPage() {
     }
 
     if (isMatch) {
+      if (isTriggeringRef.current) return
+      isTriggeringRef.current = true
       // Clear rolling buffer on match to avoid double triggers
       accumulatedSpeechRef.current = []
       setAccumulatedText('')
@@ -930,6 +945,7 @@ export default function VoiceSOSPage() {
   }
 
   const triggerSOS = async () => {
+    isTriggeringRef.current = true
     stopListening()
     
     let lat = currentLocation?.lat || 0
@@ -989,20 +1005,38 @@ export default function VoiceSOSPage() {
       if (testMode) {
         setTestResult({ success: false, message: 'Network error — could not reach server' })
       }
-    }
-
-
-    // Resume listening if enabled and not in test mode
-    if (!testMode && config.enabled) {
-      setTimeout(() => startListening(), 3000)
+    } finally {
+      if (testMode) {
+        // In test mode, release triggering lock after 2.5s
+        setTimeout(() => {
+          isTriggeringRef.current = false
+          if (isEnabledRef.current && isMountedRef.current) {
+            startListening()
+          }
+        }, 2500)
+      } else {
+        // In real SOS mode, wait for cooldown period
+        const cooldownMs = (config.cooldown_seconds || 60) * 1000
+        setTimeout(() => {
+          isTriggeringRef.current = false
+        }, cooldownMs)
+      }
     }
   }
 
   const toggleEnable = () => {
-    setConfig(prev => ({ ...prev, enabled: !prev.enabled }))
+    setConfig(prev => {
+      const next = !prev.enabled
+      if (!next) {
+        isTriggeringRef.current = false
+        stopListening()
+      }
+      return { ...prev, enabled: next }
+    })
   }
 
   const handleTestMode = () => {
+    isTriggeringRef.current = false
     setTestMode(true)
     setConfig(prev => ({ ...prev, enabled: true }))
     setTestResult(null)
@@ -1329,7 +1363,13 @@ export default function VoiceSOSPage() {
                   <Phone size={16} /> Call 112
                 </a>
                 <button
-                  onClick={() => setShowSOSModal(false)}
+                  onClick={() => {
+                    setShowSOSModal(false)
+                    isTriggeringRef.current = false
+                    if (config.enabled && !isListening) {
+                      startListening()
+                    }
+                  }}
                   style={{
                     flex: 1, background: '#f3f4f6', color: '#6b7280', padding: '12px',
                     borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem'
