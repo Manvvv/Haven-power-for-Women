@@ -465,12 +465,19 @@ def set_cooldown(user_id: str):
 
 
 def format_emergency_alert(event_id: str, ts: str, lat: float, lng: float) -> str:
-    map_link = f"https://maps.google.com/?q={lat},{lng}" if lat and lng else "Location unavailable"
+    # Build map link as plain text — it gets URL-encoded once by format_whatsapp_url's quote()
+    # Do NOT pre-encode it here to avoid double-encoding
+    if lat and lng:
+        map_link = f"https://maps.google.com/?q={lat},{lng}"
+        loc_str = f"{lat}, {lng}"
+    else:
+        map_link = "Location unavailable"
+        loc_str = "Unknown"
     return (
         f"🚨 HAVEN EMERGENCY ALERT 🚨\n\n"
         f"A trusted contact has triggered an emergency SOS.\n\n"
         f"Time: {ts}\n"
-        f"Location: {lat}, {lng}\n"
+        f"Location: {loc_str}\n"
         f"Map: {map_link}\n"
         f"SOS Event ID: {event_id}\n\n"
         f"Please respond immediately."
@@ -478,17 +485,20 @@ def format_emergency_alert(event_id: str, ts: str, lat: float, lng: float) -> st
 
 
 def format_whatsapp_url(phone: str, text: str) -> str:
-    encoded_text = requests.utils.quote(text)
+    """Build a WhatsApp direct-link URL with proper phone formatting and single encoding."""
+    encoded_text = requests.utils.quote(text, safe='')
     if not phone:
         return f"https://api.whatsapp.com/send?text={encoded_text}"
     digits = re.sub(r'\D', '', phone)
+    # Handle Indian 10-digit numbers without country code
     if len(digits) == 10 and digits[0] in ['6', '7', '8', '9']:
         digits = '91' + digits
     elif len(digits) == 11 and digits.startswith('0'):
         digits = '91' + digits[1:]
     if not digits:
         return f"https://api.whatsapp.com/send?text={encoded_text}"
-    return f"https://api.whatsapp.com/send?phone={digits}&text={encoded_text}"
+    # WhatsApp requires + prefix on the phone parameter
+    return f"https://api.whatsapp.com/send?phone=%2B{digits}&text={encoded_text}"
 
 
 # ─── Authentication Routes ────────────────────────────────

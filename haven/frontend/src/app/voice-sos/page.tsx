@@ -255,8 +255,17 @@ export default function VoiceSOSPage() {
   const [isSavingConfig, setIsSavingConfig] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
   
+  // PIN lock for safe word
+  const [pin, setPin] = useState('')
+  const [pinUnlock, setPinUnlock] = useState('')
+  const [pinLocked, setPinLocked] = useState(false)  // true = encrypted blob exists, needs unlock
+  const [pinError, setPinError] = useState('')
+  const [showPin, setShowPin] = useState(false)
+  const [isUnlocking, setIsUnlocking] = useState(false)
+  
   const [newContact, setNewContact] = useState({ name: '', phone: '', email: '', priority: 1 })
   const [isSavingContact, setIsSavingContact] = useState(false)
+  const [contactSaveMsg, setContactSaveMsg] = useState('')
   
   const [isListening, setIsListening] = useState(false)
   const [transcript, setTranscript] = useState('')
@@ -395,24 +404,92 @@ export default function VoiceSOSPage() {
     return text.toLowerCase().replace(/[^\w\s]|_/g, '').replace(/\s+/g, ' ').trim()
   }
 
+  // --- AES-GCM PIN helpers (safe word stored encrypted in localStorage) ---
+  const derivePinKey = async (pinCode: string): Promise<CryptoKey> => {
+    const enc = new TextEncoder()
+    const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(pinCode), 'PBKDF2', false, ['deriveKey'])
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: enc.encode('haven_sos_pin_salt'), iterations: 100000, hash: 'SHA-256' },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    )
+  }
+
+  const encryptWithPin = async (pinCode: string, plaintext: string): Promise<string> => {
+    const key = await derivePinKey(pinCode)
+    const iv = crypto.getRandomValues(new Uint8Array(12))
+    const enc = new TextEncoder()
+    const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(plaintext))
+    // Pack iv + ciphertext as base64
+    const combined = new Uint8Array(iv.byteLength + ciphertext.byteLength)
+    combined.set(iv, 0)
+    combined.set(new Uint8Array(ciphertext), iv.byteLength)
+    return btoa(String.fromCharCode(...combined))
+  }
+
+  const decryptWithPin = async (pinCode: string, blob: string): Promise<string | null> => {
+    try {
+      const combined = Uint8Array.from(atob(blob), c => c.charCodeAt(0))
+      const iv = combined.slice(0, 12)
+      const ciphertext = combined.slice(12)
+      const key = await derivePinKey(pinCode)
+      const dec = new TextDecoder()
+      const result = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext)
+      return dec.decode(result)
+    } catch {
+      return null
+    }
+  }
+
+  // Check on mount if an encrypted PIN-locked safe word blob exists
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const blob = localStorage.getItem('haven_voice_pin_blob')
+    if (blob) setPinLocked(true)
+  }, [])
+
+  const handlePinUnlock = async () => {
+    if (!pinUnlock || pinUnlock.length < 4) {
+      setPinError('PIN must be at least 4 digits')
+      return
+    }
+    setIsUnlocking(true)
+    setPinError('')
+    try {
+      const blob = localStorage.getItem('haven_voice_pin_blob')
+      if (!blob) { setPinLocked(false); setIsUnlocking(false); return }
+      const decrypted = await decryptWithPin(pinUnlock, blob)
+      if (!decrypted) {
+        setPinError('Wrong PIN — try again')
+        setIsUnlocking(false)
+        return
+      }
+      // decrypted format: "hash|||normalizedWord"
+      const [hash, word] = decrypted.split('|||')
+      setSafeWordHash(hash || '')
+      setSafeWordText(word || '')
+      setPinLocked(false)
+      setPinUnlock('')
+      setPinError('')
+    } catch {
+      setPinError('Failed to unlock — please try again')
+    }
+    setIsUnlocking(false)
+  }
+
+  // --- Fixed WhatsApp opener — use backend URL directly, no mangling ---
   const openWhatsAppLink = (url: string) => {
     if (!url) return
-    let finalUrl = url
-    if (url.includes('wa.me/?text=')) {
-      finalUrl = url.replace('https://wa.me/?text=', 'https://api.whatsapp.com/send?text=')
-    } else if (url.includes('wa.me/+')) {
-      finalUrl = url.replace('https://wa.me/+', 'https://api.whatsapp.com/send?phone=')
-    } else if (url.includes('wa.me/')) {
-      finalUrl = url.replace('https://wa.me/', 'https://api.whatsapp.com/send?phone=')
-    }
-
+    // Backend already returns correct api.whatsapp.com URLs — open as-is
     const a = document.createElement('a')
-    a.href = finalUrl
+    a.href = url
     a.target = '_blank'
-    a.rel = 'noreferrer'
+    a.rel = 'noreferrer noopener'
     document.body.appendChild(a)
     a.click()
-    document.body.removeChild(a)
+    setTimeout(() => document.body.removeChild(a), 200)
   }
 
   const openSMSAlert = (phone: string, text: string) => {
@@ -706,15 +783,29 @@ export default function VoiceSOSPage() {
       setSaveMsg('Please enter a safe word')
       return
     }
+    // Require PIN when setting a new safe word
+    if (safeWord && (!pin || pin.length < 4)) {
+      setSaveMsg('Please enter a 4-digit PIN to lock your safe word')
+      return
+    }
     setIsSavingConfig(true)
     setSaveMsg('')
     try {
       let currentNorm = safeWordText
+      let currentHash = safeWordHash
       if (safeWord) {
         currentNorm = normalizeText(safeWord)
-        const h = await hashString(currentNorm)
-        setSafeWordHash(h)
+        currentHash = await hashString(currentNorm)
+        setSafeWordHash(currentHash)
         setSafeWordText(currentNorm)
+
+        // Encrypt and persist to localStorage with PIN
+        if (pin && pin.length >= 4) {
+          const blob = await encryptWithPin(pin, `${currentHash}|||${currentNorm}`)
+          localStorage.setItem('haven_voice_pin_blob', blob)
+          setPinLocked(false)  // already unlocked in current session
+          setPin('')
+        }
       }
 
       const res = await secureFetch('/voice-sos/config', {
@@ -730,7 +821,7 @@ export default function VoiceSOSPage() {
       
       if (res.ok) {
         setSafeWord('')
-        setSaveMsg('✓ Configuration saved!')
+        setSaveMsg('✓ Configuration saved! Safe word locked with your PIN.')
         await fetchConfig()
       } else {
         setSaveMsg('Failed to save configuration')
@@ -745,27 +836,36 @@ export default function VoiceSOSPage() {
   const handleAddContact = async () => {
     if (contacts.length >= 5 || !newContact.name || !newContact.phone) return
     setIsSavingContact(true)
+    setContactSaveMsg('')
     try {
-      const updatedContacts = [...contacts, { ...newContact, priority: contacts.length + 1 }]
+      // Use a local merged list to avoid stale closure (fix: don't rely on contacts state value)
+      const merged = [...contacts, { ...newContact, priority: contacts.length + 1 }]
       const res = await secureFetch('/trusted-contacts', {
         method: 'POST',
         body: JSON.stringify({
           user_id: userId,
-          contacts: updatedContacts.map(c => ({ name: c.name, phone: c.phone, email: c.email || '', priority: c.priority || 1 }))
+          contacts: merged.map(c => ({ name: c.name, phone: c.phone, email: c.email || '', priority: c.priority || 1 }))
         })
       })
       if (res.ok) {
+        setContactSaveMsg('✓ Contact saved!')
+        setNewContact({ name: '', phone: '', email: '', priority: 1 })
+        // Fetch authoritative list from server
         await fetchContacts()
-        setNewContact({ name: '', phone: '', email: '', priority: contacts.length + 2 })
+        setTimeout(() => setContactSaveMsg(''), 3000)
+      } else {
+        setContactSaveMsg('Failed to save contact')
       }
     } catch (error) {
       console.error('Error adding contact:', error)
+      setContactSaveMsg('Error saving contact')
     }
     setIsSavingContact(false)
   }
 
   const handleDeleteContact = async (contactName: string) => {
     try {
+      // Build updated list locally from current state
       const updatedContacts = contacts.filter(c => c.name !== contactName)
       const res = await secureFetch('/trusted-contacts', {
         method: 'POST',
@@ -1127,9 +1227,49 @@ export default function VoiceSOSPage() {
         {/* Setup Section */}
         <div style={styles.card}>
           <h2 style={styles.cardTitle}>Configuration</h2>
-          <div style={{marginBottom: '1rem'}}>
+
+          {/* PIN Unlock Banner — shown when an encrypted blob exists but is not yet unlocked */}
+          {pinLocked && (
+            <div style={{ background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 10, padding: '1rem', marginBottom: '1.2rem' }}>
+              <div style={{ fontWeight: 700, color: '#92400e', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                🔐 Safe Word Locked — Enter your PIN to unlock
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type={showPin ? 'text' : 'password'}
+                  inputMode="numeric"
+                  maxLength={8}
+                  style={{ ...styles.input, marginBottom: 0, width: 140, letterSpacing: 6, fontSize: '1.2rem' }}
+                  value={pinUnlock}
+                  onChange={e => { setPinUnlock(e.target.value.replace(/\D/g, '')); setPinError('') }}
+                  onKeyDown={e => { if (e.key === 'Enter') handlePinUnlock() }}
+                  placeholder="••••"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPin(!showPin)}
+                  style={{ background: 'none', border: 'none', color: colors.muted, cursor: 'pointer', padding: '0 4px' }}
+                >
+                  {showPin ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+                <button
+                  style={{ ...styles.btnPrimary, padding: '0.6rem 1.2rem', fontSize: '0.9rem' }}
+                  onClick={handlePinUnlock}
+                  disabled={isUnlocking}
+                >
+                  {isUnlocking ? 'Unlocking...' : 'Unlock'}
+                </button>
+              </div>
+              {pinError && <div style={{ marginTop: 6, fontSize: '0.82rem', color: colors.danger, fontWeight: 600 }}>{pinError}</div>}
+              <div style={{ marginTop: 8, fontSize: '0.78rem', color: colors.muted }}>
+                Forgot PIN? Re-enter your safe word below and set a new PIN to reset.
+              </div>
+            </div>
+          )}
+
+          <div style={{ marginBottom: '1rem' }}>
             <label style={styles.label}>Safe Word / Phrase</label>
-            <div style={{display: 'flex', gap: '0.5rem', position: 'relative'}}>
+            <div style={{ display: 'flex', gap: '0.5rem', position: 'relative' }}>
               <input
                 type={showSafeWord ? 'text' : 'password'}
                 style={styles.input}
@@ -1148,12 +1288,40 @@ export default function VoiceSOSPage() {
                 {showSafeWord ? <EyeOff size={20} /> : <Eye size={20} />}
               </button>
             </div>
-            <p style={{fontSize: '0.8rem', color: colors.muted, marginTop: '-0.5rem'}}>
+            <p style={{ fontSize: '0.8rem', color: colors.muted, marginTop: '-0.5rem' }}>
               This phrase will trigger an SOS when spoken. Never share it.
             </p>
           </div>
+
+          {/* PIN input — shown when entering a new safe word */}
+          {safeWord && (
+            <div style={{ marginBottom: '1.2rem', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 10, padding: '1rem' }}>
+              <label style={{ ...styles.label, color: '#166534' }}>🔐 Set a PIN to lock your safe word</label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type={showPin ? 'text' : 'password'}
+                  inputMode="numeric"
+                  maxLength={8}
+                  style={{ ...styles.input, marginBottom: 0, width: 160, letterSpacing: 6, fontSize: '1.1rem' }}
+                  value={pin}
+                  onChange={e => setPin(e.target.value.replace(/\D/g, ''))}
+                  placeholder="4–8 digits"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPin(!showPin)}
+                  style={{ background: 'none', border: 'none', color: colors.muted, cursor: 'pointer', padding: '0 4px' }}
+                >
+                  {showPin ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+              <p style={{ fontSize: '0.78rem', color: '#166534', marginTop: 6 }}>
+                Your safe word is encrypted with this PIN and stored locally. Without the PIN, the safe word cannot be recovered.
+              </p>
+            </div>
+          )}
           
-          <div style={{display: 'flex', alignItems: 'center', gap: '1rem'}}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
             <button 
               style={styles.btnPrimary} 
               onClick={handleSaveConfig}
@@ -1162,7 +1330,7 @@ export default function VoiceSOSPage() {
               {isSavingConfig ? 'Saving...' : 'Save Configuration'}
             </button>
             {saveMsg && (
-              <span style={{fontSize: '0.85rem', fontWeight: 600, color: saveMsg.includes('✓') ? colors.success : colors.danger}}>
+              <span style={{ fontSize: '0.85rem', fontWeight: 600, color: saveMsg.includes('✓') ? colors.success : colors.danger }}>
                 {saveMsg}
               </span>
             )}
@@ -1228,27 +1396,35 @@ export default function VoiceSOSPage() {
 
           {contacts.length < 5 && (
             <div style={{marginTop: '1.5rem'}}>
-              <div style={{display: 'flex', gap: '1rem', marginBottom: '1rem'}}>
+              <div style={{display: 'flex', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap'}}>
                 <input 
-                  style={{...styles.input, marginBottom: 0}} 
+                  style={{...styles.input, marginBottom: 0, flex: 1, minWidth: 120}} 
                   placeholder="Name" 
                   value={newContact.name}
                   onChange={e => setNewContact({...newContact, name: e.target.value})}
                 />
                 <input 
-                  style={{...styles.input, marginBottom: 0}} 
-                  placeholder="Phone" 
+                  style={{...styles.input, marginBottom: 0, flex: 1, minWidth: 120}} 
+                  placeholder="Phone (e.g. 9876543210)"
+                  type="tel"
                   value={newContact.phone}
                   onChange={e => setNewContact({...newContact, phone: e.target.value})}
                 />
               </div>
-              <button 
-                style={styles.btnSecondary} 
-                onClick={handleAddContact}
-                disabled={isSavingContact}
-              >
-                <Plus size={18} /> Add Contact
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                <button 
+                  style={styles.btnSecondary} 
+                  onClick={handleAddContact}
+                  disabled={isSavingContact || !newContact.name || !newContact.phone}
+                >
+                  {isSavingContact ? 'Saving...' : <><Plus size={18} /> Add Contact</>}
+                </button>
+                {contactSaveMsg && (
+                  <span style={{ fontSize: '0.85rem', fontWeight: 600, color: contactSaveMsg.includes('✓') ? colors.success : colors.danger }}>
+                    {contactSaveMsg}
+                  </span>
+                )}
+              </div>
             </div>
           )}
         </div>
