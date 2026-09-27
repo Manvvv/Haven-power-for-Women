@@ -1,5 +1,6 @@
 import React from 'react'
 import { Check } from 'lucide-react'
+import { parseServerDate } from '@/lib/datetime'
 
 interface StateHistory {
   status: string
@@ -69,8 +70,9 @@ export default function SOSLifecycle({ currentStatus, statusHistory }: Props) {
           const isCurrent = index === currentIndex
           const isResolved = isCurrent && state === 'RESOLVED'
           const historyItem = statusHistory.find(h => h.status === state)
-          const timeStr = historyItem
-            ? new Date(historyItem.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          const parsedTime = historyItem ? parseServerDate(historyItem.timestamp) : null
+          const timeStr = parsedTime
+            ? parsedTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
             : null
 
           // Connector half-lines. The left half of a step is green once the step

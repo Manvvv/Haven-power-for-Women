@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react'
 import { Shield, History, MapPin, Trash2, AlertTriangle, MessageSquare } from 'lucide-react'
 import { useUser } from '@clerk/nextjs'
 import { secureFetch } from '@/lib/api'
+import { formatServerDateTime } from '@/lib/datetime'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
 
 const colors = {
@@ -129,7 +130,7 @@ export default function PrivacyPage() {
           {data?.sos_history?.map((h: any, i: number) => (
             <div key={i} style={styles.listItem}>
               <div>
-                <strong>{new Date(h.timestamp).toLocaleString()}</strong>
+                <strong>{formatServerDateTime(h.timestamp)}</strong>
                 <div style={{ color: colors.muted, fontSize: '0.9rem' }}>Status: {h.status}</div>
               </div>
             </div>
@@ -142,7 +143,7 @@ export default function PrivacyPage() {
             <div key={s.id} style={styles.listItem}>
               <div>
                 <strong>Session {s.id}</strong>
-                <div style={{ color: colors.muted, fontSize: '0.9rem' }}>{new Date(s.timestamp).toLocaleString()}</div>
+                <div style={{ color: colors.muted, fontSize: '0.9rem' }}>{formatServerDateTime(s.timestamp)}</div>
               </div>
               <button
                 onClick={() => deleteTherapySession(s.id)}

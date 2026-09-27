@@ -14,6 +14,7 @@ import { ArrowLeft, Shield, HeartPulse, BookOpen, Lock, Trash2, Save, Plus } fro
 import { useUser } from '@clerk/nextjs'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
 import { secureFetch } from '@/lib/api'
+import { formatServerDateTime } from '@/lib/datetime'
 
 type Tab = 'plan' | 'checkin' | 'journal' | 'privacy'
 
@@ -219,7 +220,7 @@ export default function SafetyPlanPage() {
               <p style={{ margin: 0, fontSize: '0.82rem', color: '#6b5563', lineHeight: 1.6 }}>
                 A safety plan is a short note-to-self for hard moments — in your own words. It is not a medical document. Write one line per item. Everything is stored encrypted and only you can read it.
               </p>
-              {planUpdated && <p style={{ margin: '8px 0 0', fontSize: '0.68rem', color: '#8b6b7d' }}>Last saved: {new Date(planUpdated).toLocaleString()}</p>}
+              {planUpdated && <p style={{ margin: '8px 0 0', fontSize: '0.68rem', color: '#8b6b7d' }}>Last saved: {formatServerDateTime(planUpdated)}</p>}
             </div>
 
             {PLAN_FIELDS.map(f => (
@@ -290,7 +291,7 @@ export default function SafetyPlanPage() {
                 <div style={{ display: 'grid', gap: 8 }}>
                   {checkins.map((c, i) => (
                     <div key={c.checkin_id || i} style={{ background: 'white', border: '1px solid rgba(190,24,93,0.12)', borderRadius: 10, padding: '10px 12px' }}>
-                      <div style={{ fontSize: '0.66rem', color: '#8b6b7d', marginBottom: 4 }}>{c.created_at ? new Date(c.created_at).toLocaleString() : ''}</div>
+                      <div style={{ fontSize: '0.66rem', color: '#8b6b7d', marginBottom: 4 }}>{formatServerDateTime(c.created_at)}</div>
                       <div style={{ fontSize: '0.78rem', color: '#4b3540' }}>
                         {['mood', 'stress', 'sleep', 'safety', 'support_connection'].filter(k => c[k]).map(k => `${k.replace('support_connection', 'connected')}: ${c[k]}`).join(' · ') || 'No ratings'}
                       </div>
@@ -327,7 +328,7 @@ export default function SafetyPlanPage() {
                 {entries.map((e, i) => (
                   <div key={e.entry_id || i} style={{ background: 'white', border: '1px solid rgba(190,24,93,0.12)', borderRadius: 10, padding: '12px 14px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                      <div style={{ fontSize: '0.66rem', color: '#8b6b7d' }}>{e.created_at ? new Date(e.created_at).toLocaleString() : ''}{e.mood ? ` · ${e.mood}` : ''}</div>
+                      <div style={{ fontSize: '0.66rem', color: '#8b6b7d' }}>{formatServerDateTime(e.created_at)}{e.mood ? ` · ${e.mood}` : ''}</div>
                       <button onClick={() => deleteEntry(e.entry_id)} aria-label="Delete entry" style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', display: 'flex', padding: 2 }}><Trash2 size={14} /></button>
                     </div>
                     {e.tags?.length > 0 && <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', margin: '6px 0' }}>{e.tags.map((t: string, j: number) => <span key={j} style={{ fontSize: '0.62rem', background: '#fce7f3', color: '#be185d', borderRadius: 20, padding: '2px 8px' }}>{t}</span>)}</div>}

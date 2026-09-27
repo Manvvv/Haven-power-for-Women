@@ -7,6 +7,7 @@ import { secureFetch, getAuthorityToken, setAuthorityToken, clearAuthorityToken 
 import { useNotifications } from '@/hooks/useNotifications'
 import { Bell } from 'lucide-react'
 import SOSLifecycle from '@/components/SOSLifecycle'
+import { parseServerDate, formatServerDateTime } from '@/lib/datetime'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -406,7 +407,7 @@ export default function AuthorityPage() {
       <h2>CASE REFERENCE</h2>
       <div class="field"><strong>DIR Form Number:</strong> ${esc(d.dir_form_number)}</div>
       <div class="field"><strong>Haven Case ID:</strong> ${esc(d.case_id)}</div>
-      <div class="field"><strong>Generated:</strong> ${esc(new Date(d.generated_at).toLocaleString())}</div>
+      <div class="field"><strong>Generated:</strong> ${esc(formatServerDateTime(d.generated_at))}</div>
       <div class="field"><strong>Officer:</strong> ${esc(d.officer_name || 'N/A')} (${esc(d.officer_designation || 'Protection Officer')})</div>
       <div class="field"><strong>Station:</strong> ${esc(d.station_name || 'N/A')}</div>
       <div class="field"><strong>District:</strong> ${esc(d.district || 'N/A')}</div>
@@ -824,7 +825,8 @@ export default function AuthorityPage() {
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end', flexShrink: 0 }}>
                           {/* Case Time — IST (New Delhi) */}
                           {c.created_at && (() => {
-                            const d = new Date(c.created_at)
+                            const d = parseServerDate(c.created_at)
+                            if (!d) return null
                             const istTime = new Intl.DateTimeFormat('en-IN', {
                               timeZone: 'Asia/Kolkata',
                               hour: '2-digit',
@@ -1435,7 +1437,7 @@ export default function AuthorityPage() {
                       <strong>DIR Form No:</strong> <span style={{ color: '#be185d' }}>{dirFormData.dir_form_number}</span>
                     </div>
                     <div>
-                      <strong>Generated:</strong> {new Date(dirFormData.generated_at).toLocaleString()}
+                      <strong>Generated:</strong> {formatServerDateTime(dirFormData.generated_at)}
                     </div>
                   </div>
 

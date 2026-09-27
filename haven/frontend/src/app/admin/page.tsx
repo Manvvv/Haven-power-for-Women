@@ -20,6 +20,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useUser } from '@clerk/nextjs'
 import { secureFetch } from '@/lib/api'
+import { formatServerDateTime } from '@/lib/datetime'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
 
 const colors = {
@@ -379,7 +380,7 @@ export default function AdminPage() {
                     return (
                       <tr key={idx} className="hover:bg-slate-50/80 transition-colors">
                         <td className="py-3 px-4 text-xs font-mono text-slate-600 whitespace-nowrap">
-                          {log.timestamp ? new Date(log.timestamp).toLocaleString() : '—'}
+                          {log.timestamp ? formatServerDateTime(log.timestamp, '—') : '—'}
                         </td>
                         <td className="py-3 px-4 font-medium text-slate-800">
                           {log.actor_id || 'System'}

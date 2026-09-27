@@ -9,6 +9,7 @@ import {
 import { useUser } from '@clerk/nextjs'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
 import { secureFetch } from '@/lib/api'
+import { formatServerDateTime } from '@/lib/datetime'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -1673,7 +1674,7 @@ export default function VoiceSOSPage() {
               <div key={ev.event_id} style={styles.historyItem}>
                 <div>
                   <div style={{fontSize: '0.85rem', color: colors.muted}}>
-                    {new Date(ev.timestamp).toLocaleString()}
+                    {formatServerDateTime(ev.timestamp)}
                   </div>
                   <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem'}}>
                     <span style={styles.badge(ev.trigger_type === 'test' ? 'pending' : 'denied')}>
