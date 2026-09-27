@@ -1,0 +1,80 @@
+{"text": "I feel really anxious and alone tonight, I just need someone to talk to.", "severity": "LOW", "indicators": []}
+{"text": "Things have been tense at home lately and I'm not sleeping well. Can you share some support resources?", "severity": "LOW", "indicators": []}
+{"text": "I had an argument with my partner and I'm upset, but I'm safe right now.", "severity": "LOW", "indicators": []}
+{"text": "I want to understand my legal options if I decide to leave in the future.", "severity": "LOW", "indicators": []}
+{"text": "Feeling overwhelmed and stressed about my relationship, nothing dangerous, just venting.", "severity": "LOW", "indicators": []}
+{"text": "My mood has been low and I feel isolated from my friends since I moved in with him.", "severity": "LOW", "indicators": []}
+{"text": "Can you tell me about women's shelters in my city? Just gathering information for now.", "severity": "LOW", "indicators": ["emergency_assistance_request"]}
+{"text": "I'm okay but I'd like to make a safety plan just in case things get worse someday.", "severity": "LOW", "indicators": []}
+{"text": "We had a disagreement and he raised his voice, but he calmed down and left the house.", "severity": "LOW", "indicators": []}
+{"text": "I just need reassurance, I've been crying all day but I am not in any danger.", "severity": "LOW", "indicators": []}
+{"text": "My partner has been checking my phone and getting jealous when I go out with friends.", "severity": "LOW", "indicators": []}
+{"text": "I'm feeling nervous about going home after our fight yesterday.", "severity": "LOW", "indicators": []}
+{"text": "He keeps calling me names and putting me down whenever I speak to my family.", "severity": "LOW", "indicators": ["repeated_abuse"]}
+{"text": "I'd like to document some incidents in case I need them later, can you help?", "severity": "LOW", "indicators": []}
+{"text": "Not an emergency, but he controls all our money and I feel trapped financially.", "severity": "LOW", "indicators": []}
+{"text": "He threatened to leave me and take the kids if I ever talk back to him again.", "severity": "MODERATE", "indicators": ["threat"]}
+{"text": "My ex has been showing up outside my workplace and won't stop texting me.", "severity": "MODERATE", "indicators": ["stalking"]}
+{"text": "He said he would hurt me if I go to my sister's place this weekend.", "severity": "MODERATE", "indicators": ["threat"]}
+{"text": "Every night this week he has been screaming at me and blocking the door when I try to leave the room.", "severity": "MODERATE", "indicators": ["repeated_abuse", "confinement"]}
+{"text": "He grabbed my wrist hard during the argument and it still hurts, I'm scared it will happen again.", "severity": "MODERATE", "indicators": ["physical_assault", "repeated_abuse"]}
+{"text": "My partner is following me in his car right now, I don't feel safe but I'm still driving.", "severity": "MODERATE", "indicators": ["stalking"]}
+{"text": "He keeps threatening to post my private photos online if I leave him.", "severity": "MODERATE", "indicators": ["threat", "repeated_abuse"]}
+{"text": "My neighbour's husband hits her often, I can hear it through the walls again tonight.", "severity": "MODERATE", "indicators": ["physical_assault", "repeated_abuse"]}
+{"text": "He took my keys and phone so I couldn't leave, gave them back after an hour.", "severity": "MODERATE", "indicators": ["confinement"]}
+{"text": "I think someone has been following me home from the bus stop for the past three days.", "severity": "MODERATE", "indicators": ["stalking"]}
+{"text": "He shoved me against the wall earlier, I'm okay now but I'm afraid of what's next.", "severity": "MODERATE", "indicators": ["physical_assault", "threat"]}
+{"text": "My boyfriend said he'll come to my college and make a scene if I don't reply to him.", "severity": "MODERATE", "indicators": ["threat", "stalking"]}
+{"text": "He's been drinking and getting aggressive, throwing things around the kitchen.", "severity": "MODERATE", "indicators": ["threat"]}
+{"text": "I locked myself in the bathroom because he was pounding on the door and yelling.", "severity": "MODERATE", "indicators": ["confinement", "threat"]}
+{"text": "He warned me that next time I won't be so lucky, I don't know what he means but I'm frightened.", "severity": "MODERATE", "indicators": ["threat"]}
+{"text": "Please send help, he is hitting me right now and I can't get out of the house.", "severity": "CRITICAL", "indicators": ["physical_assault", "confinement", "immediate_danger", "emergency_assistance_request"]}
+{"text": "He has a knife and is threatening to kill me, I'm hiding in the closet, come quickly.", "severity": "CRITICAL", "indicators": ["threat", "immediate_danger", "emergency_assistance_request"]}
+{"text": "I'm locked in the bedroom and he's breaking the door down, I'm terrified, send police now.", "severity": "CRITICAL", "indicators": ["confinement", "immediate_danger", "emergency_assistance_request"]}
+{"text": "He is choking me help me please I can't breathe", "severity": "CRITICAL", "indicators": ["physical_assault", "immediate_danger", "emergency_assistance_request"]}
+{"text": "My husband has a gun and is drunk and screaming that he'll shoot me and himself, please hurry.", "severity": "CRITICAL", "indicators": ["threat", "immediate_danger", "emergency_assistance_request"]}
+{"text": "He dragged me by my hair and I managed to run, he is chasing me on the street right now.", "severity": "CRITICAL", "indicators": ["physical_assault", "immediate_danger", "emergency_assistance_request"]}
+{"text": "I've been beaten badly and I'm bleeding, I need an ambulance and the police immediately.", "severity": "CRITICAL", "indicators": ["physical_assault", "immediate_danger", "emergency_assistance_request"]}
+{"text": "He tied me up and left, I just got free, please send someone before he comes back.", "severity": "CRITICAL", "indicators": ["confinement", "immediate_danger", "emergency_assistance_request"]}
+{"text": "There is a man forcing me into a car near the market, help, someone call the police.", "severity": "CRITICAL", "indicators": ["immediate_danger", "emergency_assistance_request"]}
+{"text": "He is threatening me with a knife and won't let me leave the flat, I'm so scared, help.", "severity": "CRITICAL", "indicators": ["threat", "confinement", "immediate_danger", "emergency_assistance_request"]}
+{"text": "SOS he broke in and is attacking me I need help now address is coming", "severity": "CRITICAL", "indicators": ["physical_assault", "immediate_danger", "emergency_assistance_request"]}
+{"text": "My father is beating my mother right now and threatening us with a rod, please send help fast.", "severity": "CRITICAL", "indicators": ["physical_assault", "threat", "immediate_danger", "emergency_assistance_request"]}
+{"text": "I ran into a shop to hide, he is outside with a weapon looking for me, call the police.", "severity": "CRITICAL", "indicators": ["threat", "immediate_danger", "emergency_assistance_request"]}
+{"text": "He set fire to the door and won't let me out, we are trapped inside, emergency please.", "severity": "CRITICAL", "indicators": ["confinement", "immediate_danger", "emergency_assistance_request"]}
+{"text": "Being followed by two men on foot who are getting closer, I'm alone and scared, need help now.", "severity": "CRITICAL", "indicators": ["stalking", "immediate_danger", "emergency_assistance_request"]}
+{"text": "He slapped me across the face and pushed me down the stairs, I think my arm is broken.", "severity": "HIGH", "indicators": ["physical_assault"]}
+{"text": "He has locked me inside the house and taken all the keys, I don't know when he'll be back.", "severity": "HIGH", "indicators": ["confinement"]}
+{"text": "My ex has been stalking me for weeks and just tried to force his way into my apartment.", "severity": "HIGH", "indicators": ["stalking", "threat"]}
+{"text": "He beat me last night and said if I tell anyone he will do worse, I'm scared for my life.", "severity": "HIGH", "indicators": ["physical_assault", "threat", "repeated_abuse"]}
+{"text": "I have bruises all over from him hitting me repeatedly this week, I need to get out.", "severity": "HIGH", "indicators": ["physical_assault", "repeated_abuse"]}
+{"text": "He held me down and I couldn't move, he only stopped when the neighbour knocked.", "severity": "HIGH", "indicators": ["physical_assault", "confinement"]}
+{"text": "My partner threw me against the furniture and is now blocking the only exit.", "severity": "HIGH", "indicators": ["physical_assault", "confinement"]}
+{"text": "He punched me and took my phone, I'm using a friend's phone, I'm afraid to go home.", "severity": "HIGH", "indicators": ["physical_assault", "threat"]}
+{"text": "He has been threatening me with a knife during arguments and hit me twice this month.", "severity": "HIGH", "indicators": ["threat", "physical_assault", "repeated_abuse"]}
+{"text": "My husband strangled me until I nearly passed out, he left but I fear he'll return soon.", "severity": "HIGH", "indicators": ["physical_assault", "threat"]}
+{"text": "He kicked me and locked me in the store room for hours, I just got out and I'm shaking.", "severity": "HIGH", "indicators": ["physical_assault", "confinement", "repeated_abuse"]}
+{"text": "A stalker who has threatened me before is waiting outside my building right now.", "severity": "HIGH", "indicators": ["stalking", "threat"]}
+{"text": "He attacked me and I locked myself in the car, he is banging on the windows.", "severity": "HIGH", "indicators": ["physical_assault", "threat"]}
+{"text": "My brother-in-law hit me hard and threatened to hurt my children if I report it.", "severity": "HIGH", "indicators": ["physical_assault", "threat"]}
+{"text": "He dragged me back inside when I tried to leave and slapped me repeatedly.", "severity": "HIGH", "indicators": ["physical_assault", "confinement", "repeated_abuse"]}
+{"text": "I'm scared to go to work because my manager keeps making inappropriate comments.", "severity": "LOW", "indicators": []}
+{"text": "My in-laws are pressuring me and it's stressful, but there is no violence involved.", "severity": "LOW", "indicators": []}
+{"text": "He deleted my contacts and forbids me from meeting my friends, I feel so controlled.", "severity": "MODERATE", "indicators": ["repeated_abuse"]}
+{"text": "Someone keeps leaving notes on my door and watching my house, it's frightening me.", "severity": "MODERATE", "indicators": ["stalking"]}
+{"text": "He threatened to throw acid on me if I file for divorce.", "severity": "HIGH", "indicators": ["threat"]}
+{"text": "He is smashing everything in the house and screaming he'll kill me, I'm hiding, please help.", "severity": "CRITICAL", "indicators": ["threat", "immediate_danger", "emergency_assistance_request"]}
+{"text": "I just want to know how to talk to a counselor about my feelings.", "severity": "LOW", "indicators": []}
+{"text": "He pinned me down and wouldn't let me call anyone for help last night.", "severity": "HIGH", "indicators": ["physical_assault", "confinement"]}
+{"text": "My partner keeps threatening self harm to stop me from leaving, I feel emotionally trapped.", "severity": "MODERATE", "indicators": ["threat", "repeated_abuse"]}
+{"text": "He is at my door right now with a bottle threatening to break in, I'm alone with my baby, help.", "severity": "CRITICAL", "indicators": ["threat", "immediate_danger", "emergency_assistance_request"]}
+{"text": "I noticed a tracker on my car and my ex seems to know everywhere I go.", "severity": "MODERATE", "indicators": ["stalking"]}
+{"text": "He slapped me once during a fight but apologised, I'm confused and hurt.", "severity": "MODERATE", "indicators": ["physical_assault"]}
+{"text": "My colleague won't stop following me after work despite me asking him to stop.", "severity": "MODERATE", "indicators": ["stalking"]}
+{"text": "He locked the gate and won't let me take my daughter to the hospital, she needs care, please help.", "severity": "HIGH", "indicators": ["confinement", "emergency_assistance_request"]}
+{"text": "I'm safe at a friend's place now but he has been abusive for years and I want to leave for good.", "severity": "MODERATE", "indicators": ["repeated_abuse"]}
+{"text": "He held a lighter to my arm and burned me, I need medical help and protection now.", "severity": "CRITICAL", "indicators": ["physical_assault", "immediate_danger", "emergency_assistance_request"]}
+{"text": "Just feeling down about my marriage, thinking about my options, no danger at the moment.", "severity": "LOW", "indicators": []}
+{"text": "He beats me almost every weekend when he drinks, last night was worse than usual.", "severity": "HIGH", "indicators": ["physical_assault", "repeated_abuse"]}
+{"text": "A man grabbed me at the station and I broke free, he is following me, I need help right now.", "severity": "CRITICAL", "indicators": ["physical_assault", "stalking", "immediate_danger", "emergency_assistance_request"]}
+{"text": "He confiscated my documents and says I can never leave the house without him.", "severity": "MODERATE", "indicators": ["confinement", "repeated_abuse"]}

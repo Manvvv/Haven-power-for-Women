@@ -1,0 +1,8 @@
+# Trained ML artifacts — regenerate with ml/train_*.py; do NOT commit binaries.
+services/ml/artifacts/*.joblib
+services/ml/artifacts/*.pkl
+ml/haven-distilbert-risk/
+ml/*-checkpoints/
+
+# Keep the labeled demo dataset and the artifacts dir placeholder in the repo.
+!services/ml/artifacts/.gitkeep

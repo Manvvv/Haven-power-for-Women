@@ -9,6 +9,39 @@ import { secureFetch } from '@/lib/api'
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 type Step = 'message' | 'generate' | 'encode' | 'share'
 
+// Turn a failed API call into a safe, specific, user-facing message.
+// Never surfaces stack traces, secrets, or raw provider errors to the UI.
+function apiErrorMessage(e: unknown, fallback: string): string {
+  // fetch() throws a TypeError when the connection itself fails
+  // (server down, refused, DNS/localhost mismatch, CORS preflight blocked).
+  if (e instanceof TypeError) {
+    return 'Cannot reach the Haven server. Check your connection and that the backend is running.'
+  }
+  if (e instanceof Error && e.message) return e.message
+  return fallback
+}
+
+// Map an HTTP error response to a user-facing Error. Reads a { detail } field
+// if present but only uses it for known-safe client (4xx) messages.
+async function throwForStatus(res: Response): Promise<never> {
+  let detail = ''
+  try {
+    const body = await res.clone().json()
+    // detail may be a plain string, or a structured {error_code, detail} object
+    // (e.g. the /encode MESSAGE_TOO_LARGE_FOR_IMAGE response). Surface the safe
+    // human-readable text in either shape.
+    if (body && typeof body.detail === 'string') detail = body.detail
+    else if (body && body.detail && typeof body.detail === 'object' && typeof body.detail.detail === 'string') {
+      detail = body.detail.detail
+    }
+  } catch { /* non-JSON error body — ignore */ }
+  if (res.status === 429) throw new Error('Too many requests. Please wait a moment and try again.')
+  if (res.status === 401 || res.status === 403) throw new Error('You are not authorized for this action.')
+  if (res.status >= 500) throw new Error('The server had a problem. Please try again in a moment.')
+  if (res.status >= 400) throw new Error(detail || 'The request could not be processed. Please revise and retry.')
+  throw new Error('Unexpected server response.')
+}
+
 export default function SOSPage() {
   useHavenAuth()
   const [step, setStep] = useState<Step>('message')
@@ -28,12 +61,18 @@ export default function SOSPage() {
         method: 'POST',
         body: JSON.stringify({ keywords })
       })
-      if (!res.ok) throw new Error('Server returned an error')
-      const data = await res.json()
-      if (!data.expanded_message) throw new Error('Invalid response')
+      if (!res.ok) await throwForStatus(res)
+      let data: { expanded_message?: string }
+      try { data = await res.json() } catch { throw new Error('The server returned an unreadable response.') }
+      if (!data || typeof data.expanded_message !== 'string' || !data.expanded_message.trim()) {
+        throw new Error('The server response was missing the expanded message.')
+      }
       setExpandedMsg(data.expanded_message)
       setStep('generate')
-    } catch { setError('Could not expand message. Please check backend connection.') }
+    } catch (e) {
+      console.error('[expandMessage] failed:', e)
+      setError(apiErrorMessage(e, 'Could not expand message. Please try again.'))
+    }
     finally { setLoading(false) }
   }
 
@@ -44,12 +83,18 @@ export default function SOSPage() {
         method: 'POST',
         body: JSON.stringify({ prompt: imagePrompt })
       })
-      if (!res.ok) throw new Error('Server returned an error')
-      const data = await res.json()
-      if (!data.image_base64) throw new Error('Invalid response')
+      if (!res.ok) await throwForStatus(res)
+      let data: { image_base64?: string }
+      try { data = await res.json() } catch { throw new Error('The server returned an unreadable response.') }
+      if (!data || typeof data.image_base64 !== 'string' || !data.image_base64) {
+        throw new Error('The server response was missing the generated image.')
+      }
       setImageBase64(data.image_base64)
       setStep('encode')
-    } catch { setError('Image generation failed. Please check backend connection.') }
+    } catch (e) {
+      console.error('[generateImage] failed:', e)
+      setError(apiErrorMessage(e, 'Image generation failed. Please try again.'))
+    }
     finally { setLoading(false) }
   }
 
@@ -60,12 +105,18 @@ export default function SOSPage() {
         method: 'POST',
         body: JSON.stringify({ message: expandedMsg, image_base64: imageBase64 })
       })
-      if (!res.ok) throw new Error('Server returned an error')
-      const data = await res.json()
-      if (!data.encoded_image_base64) throw new Error('Invalid response')
+      if (!res.ok) await throwForStatus(res)
+      let data: { encoded_image_base64?: string }
+      try { data = await res.json() } catch { throw new Error('The server returned an unreadable response.') }
+      if (!data || typeof data.encoded_image_base64 !== 'string' || !data.encoded_image_base64) {
+        throw new Error('The server response was missing the encoded image.')
+      }
       setEncodedImageBase64(data.encoded_image_base64)
       setStep('share')
-    } catch { setError('Encoding failed. Please check backend connection.') }
+    } catch (e) {
+      console.error('[encodeMessage] failed:', e)
+      setError(apiErrorMessage(e, 'Encoding failed. Please try again.'))
+    }
     finally { setLoading(false) }
   }
 

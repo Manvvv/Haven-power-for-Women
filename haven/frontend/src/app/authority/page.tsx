@@ -4,6 +4,9 @@ import Link from 'next/link'
 import { ArrowLeft, Shield, Search, Eye, Upload, Users, AlertTriangle, CheckCircle, Clock, RefreshCw, X, FileText, UserCheck, ShieldAlert, Printer } from 'lucide-react'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
 import { secureFetch, getAuthorityToken, setAuthorityToken, clearAuthorityToken } from '@/lib/api'
+import { useNotifications } from '@/hooks/useNotifications'
+import { Bell } from 'lucide-react'
+import SOSLifecycle from '@/components/SOSLifecycle'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -26,9 +29,19 @@ interface SOSCase {
     captured_at?: string
   }
 }
+interface MatchFactor { label: string; strength: string }
 interface CulpritMatch {
   name?: string; physical_description: string; behavioral_traits: string
-  location?: string; culprit_id: string; score?: number
+  location?: string; culprit_id: string; profile_id?: string
+  score?: number; match_score?: number; match_level?: string
+  match_factors?: MatchFactor[]; match_summary?: string
+  human_verification_required?: boolean; created_at?: string
+  updated_at?: string
+  associated_cases?: { case_id: string; relationship: string; associated_at?: string }[]
+}
+interface DuplicateCandidate {
+  profile_id: string; name?: string; physical_description?: string
+  location?: string; match_level?: string; reasons?: string[]
 }
 interface DIRFormData {
   case_id: string
@@ -68,6 +81,7 @@ type Tab = 'cases' | 'decode' | 'culprit'
 export default function AuthorityPage() {
   useHavenAuth()
   const [unlocked, setUnlocked] = useState(false)
+  const [badge, setBadge] = useState('')
   const [pass, setPass] = useState('')
   const [passError, setPassError] = useState(false)
   const [authLoading, setAuthLoading] = useState(false)
@@ -88,6 +102,19 @@ export default function AuthorityPage() {
   const [reportForm, setReportForm] = useState({ name: '', physical_description: '', behavioral_traits: '', location: '' })
   const [reporting, setReporting] = useState(false)
   const [reportMsg, setReportMsg] = useState('')
+  // Case & Profile Intelligence — structured search state
+  const [queryType, setQueryType] = useState('')
+  const [degraded, setDegraded] = useState(false)
+  const [searchNotice, setSearchNotice] = useState('')
+  const [searchError, setSearchError] = useState('')
+  const [explainOpen, setExplainOpen] = useState<Record<number, boolean>>({})
+  const [detailProfile, setDetailProfile] = useState<CulpritMatch | null>(null)
+  const [compareMatch, setCompareMatch] = useState<CulpritMatch | null>(null)
+  const [regErrors, setRegErrors] = useState<Record<string, string>>({})
+  const [dupCandidates, setDupCandidates] = useState<DuplicateCandidate[]>([])
+  const [showDupDialog, setShowDupDialog] = useState(false)
+  const [dupJustification, setDupJustification] = useState('')
+  const [flaggedMatch, setFlaggedMatch] = useState<Record<number, boolean>>({})
   const [activeLiveTrackCase, setActiveLiveTrackCase] = useState<SOSCase | null>(null)
   const [liveCoords, setLiveCoords] = useState<{ lat: number; lng: number; accuracy: number; timestamp: string; speed?: number } | null>(null)
   const [trackingConnected, setTrackingConnected] = useState(false)
@@ -119,6 +146,65 @@ export default function AuthorityPage() {
 
   useEffect(() => { if (unlocked) fetchCases() }, [severityFilter, statusFilter, unlocked])
 
+  // ── Real-time SOS alerting ──────────────────────────────────────
+  // Connect to the notification socket only once the dashboard is unlocked.
+  // Backend pushes new-SOS events to any socket whose id starts with "auth_".
+  const { notifications, unreadCount } = useNotifications(
+    unlocked ? 'auth_dashboard' : undefined,
+    unlocked ? getAuthorityToken() : null
+  )
+  const [newSosBanner, setNewSosBanner] = useState<string | null>(null)
+  const lastNotifId = useRef<string | null>(null)
+
+  // Per-case lifecycle timeline (fetched on demand from /cases/{id}/lifecycle)
+  const [lifecycleCaseId, setLifecycleCaseId] = useState<string | null>(null)
+  const [lifecycleHistory, setLifecycleHistory] = useState<{ status: string; timestamp: string; actor?: string }[]>([])
+  const [lifecycleLoading, setLifecycleLoading] = useState(false)
+
+  async function toggleLifecycle(caseId: string) {
+    if (lifecycleCaseId === caseId) { setLifecycleCaseId(null); return }
+    setLifecycleCaseId(caseId)
+    setLifecycleLoading(true)
+    setLifecycleHistory([])
+    try {
+      const res = await secureFetch(`/cases/${caseId}/lifecycle`)
+      if (res.ok) {
+        const data = await res.json()
+        setLifecycleHistory(
+          (data.history || []).map((h: { to_status?: string; status?: string; timestamp: string; actor_id?: string }) => ({
+            status: (h.to_status || h.status || '').toUpperCase(),
+            timestamp: h.timestamp,
+            actor: h.actor_id,
+          })),
+        )
+      }
+    } catch { /* silent */ } finally { setLifecycleLoading(false) }
+  }
+
+  useEffect(() => {
+    if (!unlocked || notifications.length === 0) return
+    const latest = notifications[0]
+    if (!latest || latest.id === lastNotifId.current) return
+    lastNotifId.current = latest.id
+    // Refresh the case list so the new case appears without a manual refresh.
+    fetchCases()
+    // Show a clear "New SOS Received" indicator.
+    setNewSosBanner(latest.message || 'A new SOS case has been received.')
+    // Subtle notification sound (best-effort; ignored if audio is blocked).
+    try {
+      const AudioCtx = (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)
+      const ctx = new AudioCtx()
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain); gain.connect(ctx.destination)
+      osc.type = 'sine'; osc.frequency.value = 880
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.05)
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.6)
+      osc.start(); osc.stop(ctx.currentTime + 0.6)
+    } catch { /* audio optional */ }
+  }, [notifications, unlocked])
+
   async function tryUnlock() {
     setAuthLoading(true)
     setPassError(false)
@@ -126,10 +212,12 @@ export default function AuthorityPage() {
       const res = await fetch(`${API}/auth/authority-login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        // Individual credentials only: badge number (username) + the officer's
+        // own password. Identity is resolved server-side from these — the client
+        // no longer supplies officer_name/role.
         body: JSON.stringify({
+          badge_number: badge.trim(),
           password: pass,
-          badge_number: 'PO-1091',
-          officer_name: dirOfficer.name || 'Protection Officer'
         })
       })
       if (res.ok) {
@@ -283,8 +371,26 @@ export default function AuthorityPage() {
   const printDIRForm = () => {
     const printWindow = window.open('', '_blank')
     if (!printWindow || !dirFormData) return
+    // SECURITY: dirFormData mixes AI-generated text (dir_report_text) and
+    // user/case-derived fields (summary, location, nature_of_abuse, …). These
+    // are UNTRUSTED and must never be written into the print DOM raw, or a
+    // crafted case description / prompt-injected AI report could execute script
+    // in this same-origin window. Escape every dynamic value before interpolation.
+    const esc = (v: unknown): string =>
+      String(v ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+    const d = dirFormData
+    const needs = (d.needs || []).map(esc).join(', ') || 'N/A'
+    const legal = (d.legal_sections || [])
+      .map((s: string) => '<span class="legal-badge">' + esc(s) + '</span>').join(' ')
+    const relief = (d.relief_recommended || [])
+      .map((r: string) => '<span class="legal-badge">' + esc(r) + '</span>').join(' ')
     printWindow.document.write(`
-      <html><head><title>DIR Form-1 — ${dirFormData.dir_form_number}</title>
+      <html><head><title>DIR Form-1 — ${esc(d.dir_form_number)}</title>
       <style>
         body { font-family: 'Times New Roman', serif; max-width: 800px; margin: 40px auto; padding: 20px; color: #1a1a1a; line-height: 1.7; }
         h1 { text-align: center; font-size: 18px; border-bottom: 2px solid #333; padding-bottom: 10px; }
@@ -298,32 +404,32 @@ export default function AuthorityPage() {
       </style></head><body>
       <h1>DOMESTIC INCIDENT REPORT (DIR)<br/>Form-1 under Section 9(b) of PWDVA 2005</h1>
       <h2>CASE REFERENCE</h2>
-      <div class="field"><strong>DIR Form Number:</strong> ${dirFormData.dir_form_number}</div>
-      <div class="field"><strong>Haven Case ID:</strong> ${dirFormData.case_id}</div>
-      <div class="field"><strong>Generated:</strong> ${new Date(dirFormData.generated_at).toLocaleString()}</div>
-      <div class="field"><strong>Officer:</strong> ${dirFormData.officer_name || 'N/A'} (${dirFormData.officer_designation || 'Protection Officer'})</div>
-      <div class="field"><strong>Station:</strong> ${dirFormData.station_name || 'N/A'}</div>
-      <div class="field"><strong>District:</strong> ${dirFormData.district || 'N/A'}</div>
+      <div class="field"><strong>DIR Form Number:</strong> ${esc(d.dir_form_number)}</div>
+      <div class="field"><strong>Haven Case ID:</strong> ${esc(d.case_id)}</div>
+      <div class="field"><strong>Generated:</strong> ${esc(new Date(d.generated_at).toLocaleString())}</div>
+      <div class="field"><strong>Officer:</strong> ${esc(d.officer_name || 'N/A')} (${esc(d.officer_designation || 'Protection Officer')})</div>
+      <div class="field"><strong>Station:</strong> ${esc(d.station_name || 'N/A')}</div>
+      <div class="field"><strong>District:</strong> ${esc(d.district || 'N/A')}</div>
       <h2>CASE ASSESSMENT</h2>
-      <div class="field"><strong>Severity:</strong> ${(dirFormData.case_severity || 'unknown').toUpperCase()}</div>
-      <div class="field"><strong>Nature of Abuse:</strong> ${dirFormData.nature_of_abuse || 'N/A'}</div>
-      <div class="field"><strong>Immediate Danger:</strong> ${dirFormData.immediate_danger ? '⚠️ YES — IMMEDIATE RISK' : 'No immediate risk detected'}</div>
-      <div class="field"><strong>Location:</strong> ${dirFormData.location || 'N/A'}</div>
-      <div class="field"><strong>Summary:</strong> ${dirFormData.case_summary || 'N/A'}</div>
-      <div class="field"><strong>Victim Needs:</strong> ${(dirFormData.needs || []).join(', ') || 'N/A'}</div>
+      <div class="field"><strong>Severity:</strong> ${esc((d.case_severity || 'unknown').toUpperCase())}</div>
+      <div class="field"><strong>Nature of Abuse:</strong> ${esc(d.nature_of_abuse || 'N/A')}</div>
+      <div class="field"><strong>Immediate Danger:</strong> ${d.immediate_danger ? '⚠️ YES — IMMEDIATE RISK' : 'No immediate risk detected'}</div>
+      <div class="field"><strong>Location:</strong> ${esc(d.location || 'N/A')}</div>
+      <div class="field"><strong>Summary:</strong> ${esc(d.case_summary || 'N/A')}</div>
+      <div class="field"><strong>Victim Needs:</strong> ${needs}</div>
       <h2>FORENSIC EVIDENCE</h2>
-      <div class="field"><strong>Evidence Available:</strong> ${dirFormData.has_forensic_evidence ? 'YES (SHA-256 Sealed)' : 'No'}</div>
-      ${dirFormData.evidence_hash ? '<div class="field"><strong>Evidence Hash:</strong> <code>' + dirFormData.evidence_hash + '</code></div>' : ''}
+      <div class="field"><strong>Evidence Available:</strong> ${d.has_forensic_evidence ? 'YES (SHA-256 Sealed)' : 'No'}</div>
+      ${d.evidence_hash ? '<div class="field"><strong>Evidence Hash:</strong> <code>' + esc(d.evidence_hash) + '</code></div>' : ''}
       <h2>DOMESTIC INCIDENT REPORT</h2>
-      <div class="report-body">${dirFormData.dir_report_text}</div>
+      <div class="report-body">${esc(d.dir_report_text)}</div>
       <h2>APPLICABLE LEGAL PROVISIONS</h2>
-      <div>${(dirFormData.legal_sections || []).map((s: string) => '<span class="legal-badge">' + s + '</span>').join(' ')}</div>
+      <div>${legal}</div>
       <h2>RELIEF RECOMMENDED</h2>
-      <div>${(dirFormData.relief_recommended || []).map((r: string) => '<span class="legal-badge">' + r + '</span>').join(' ')}</div>
+      <div>${relief}</div>
       <div class="seal">
         <p><strong>HAVEN — Women Safety Intelligence Platform</strong></p>
         <p>This DIR Form-1 was generated under PWDVA 2005 with digital forensic integrity.</p>
-        <p>Case ID: ${dirFormData.case_id} | DIR: ${dirFormData.dir_form_number}</p>
+        <p>Case ID: ${esc(d.case_id)} | DIR: ${esc(d.dir_form_number)}</p>
       </div>
       </body></html>
     `)
@@ -380,6 +486,15 @@ export default function AuthorityPage() {
     return { score, level: 'LOW', color: '#15803d', bg: '#dcfce7', flags }
   }
 
+  // Stable, content-derived key so re-decoding the SAME evidence image (or a
+  // React StrictMode double-invoke) never creates a duplicate SOS case. This is
+  // the authority decode tool — identical hidden text = the same case.
+  function idempotencyKeyFor(text: string): string {
+    let h = 5381
+    for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0
+    return `authdecode-${(h >>> 0).toString(16)}-${text.length}`
+  }
+
   async function decodeImage(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return
     setDecoding(true); setDecodeResult(''); setDecomposed(null)
@@ -390,19 +505,37 @@ export default function AuthorityPage() {
       setDecodeImg(result)
       try {
         const decRes = await secureFetch('/decode', { method: 'POST', body: JSON.stringify({ image_base64: b64 }) })
-        if (!decRes.ok) throw new Error('Decode server error')
-        const decData = await decRes.json()
-        const msg: string = decData.decoded_message || ''
-        setDecodeResult(msg)
-        if (msg && msg !== 'No hidden message found') {
-          const decompRes = await secureFetch('/text-decomposition', { method: 'POST', body: JSON.stringify({ text: msg }) })
-          if (decompRes.ok) {
-            const decompData = await decompRes.json()
-            setDecomposed(decompData)
-            await secureFetch('/save-extracted-data', { method: 'POST', body: JSON.stringify({ decoded_text: msg, ...decompData }) })
+        const decData = await decRes.json().catch(() => ({}))
+        if (!decRes.ok) {
+          // Structured error from backend: detail = {status, error_code, detail}.
+          const info = (decData && decData.detail) || {}
+          const friendly: Record<string, string> = {
+            CORRUPTED_PAYLOAD: 'A hidden message was found but is corrupted — the image may have been recompressed (e.g. saved as JPEG) after encoding. Ask for the original PNG.',
+            UNSUPPORTED_FORMAT: 'This image is a lossy format (JPEG/WebP) and cannot carry a hidden message. Upload the original PNG.',
+            INVALID_IMAGE: 'The uploaded file could not be read as an image.',
           }
+          const code = typeof info === 'object' ? info.error_code : undefined
+          setDecodeResult(friendly[code as string] || (typeof info === 'object' && info.detail) || 'Could not decode this image.')
+          return
         }
-      } catch { setDecodeResult('Error decoding image.') }
+        // 200 responses: either an OK payload or a clean NO_PAYLOAD.
+        if (decData.status === 'NO_PAYLOAD' || !decData.decoded_message) {
+          setDecodeResult('No hidden message found in this image.')
+          return
+        }
+        const msg: string = decData.decoded_message
+        setDecodeResult(msg)
+        const decompRes = await secureFetch('/text-decomposition', { method: 'POST', body: JSON.stringify({ text: msg }) })
+        if (decompRes.ok) {
+          const decompData = await decompRes.json()
+          setDecomposed(decompData)
+          // Idempotent save — repeat decodes of the same evidence won't duplicate.
+          await secureFetch('/save-extracted-data', {
+            method: 'POST',
+            body: JSON.stringify({ decoded_text: msg, ...decompData, idempotency_key: idempotencyKeyFor(msg) }),
+          })
+        }
+      } catch { setDecodeResult('Error contacting the decode service. Please try again.') }
       finally { setDecoding(false) }
     }
     reader.readAsDataURL(file)
@@ -410,33 +543,85 @@ export default function AuthorityPage() {
 
   async function findCulpritMatches() {
     if (!culpritDesc.trim()) return
-    setSearching(true); setMatches([]); setSearchType('')
+    setSearching(true); setMatches([]); setSearchType(''); setQueryType('')
+    setDegraded(false); setSearchNotice(''); setSearchError(''); setExplainOpen({})
     try {
       const res = await secureFetch('/culprit/find-match', {
         method: 'POST',
-        body: JSON.stringify({ description: culpritDesc, top_n: 10, search_mode: searchMode, min_score: searchMode === 'description' ? 0.75 : 0 })
+        body: JSON.stringify({ description: culpritDesc, top_n: 10, search_mode: searchMode })
       })
-      if (!res.ok) throw new Error('Search server error')
+      // Distinguish real failures from an honest empty result (requirement 26).
+      if (res.status === 503) {
+        setSearchError(searchMode === 'description'
+          ? 'AI similarity search is temporarily unavailable. Name search is still available.'
+          : 'Profile service is temporarily unavailable.')
+        return
+      }
+      if (res.status === 429) { setSearchError('Too many searches. Please wait a moment and try again.'); return }
+      if (res.status === 401) { setSearchError('Your session has expired. Please sign in again.'); return }
+      if (res.status === 403) { setSearchError('You do not have authority access for profile search.'); return }
+      if (!res.ok) { setSearchError('Search failed. Please try again.'); return }
       const data = await res.json()
-      setMatches(data.matches || [])
+      setMatches(data.results || data.matches || [])
       setSearchType(data.search_type || '')
-    } catch { setMatches([]) } finally { setSearching(false) }
+      setQueryType(data.query_type || '')
+      setDegraded(!!data.degraded)
+      setSearchNotice(data.notice || '')
+    } catch { setSearchError('Search failed. Please check your connection.') }
+    finally { setSearching(false) }
   }
 
-  async function reportCulprit() {
-    if (!reportForm.physical_description || !reportForm.behavioral_traits) return
-    setReporting(true); setReportMsg('')
+  async function viewProfile(id: string) {
+    if (!id) return
+    try {
+      const res = await secureFetch(`/culprit/profile/${encodeURIComponent(id)}`)
+      if (!res.ok) return
+      const data = await res.json()
+      if (data.profile) setDetailProfile(data.profile as CulpritMatch)
+    } catch { /* silent */ }
+  }
+
+  async function submitRegister(force: boolean) {
+    setReporting(true); setReportMsg(''); setRegErrors({})
     try {
       const res = await secureFetch('/culprit/report', {
         method: 'POST',
-        body: JSON.stringify({ name: reportForm.name || 'Unknown', physical_description: reportForm.physical_description, behavioral_traits: reportForm.behavioral_traits, location: reportForm.location || '', reporter_id: 'authority' })
+        body: JSON.stringify({
+          name: reportForm.name, physical_description: reportForm.physical_description,
+          behavioral_traits: reportForm.behavioral_traits, location: reportForm.location,
+          force, justification: force ? dupJustification : ''
+        })
       })
-      if (!res.ok) throw new Error('Report server error')
+      if (res.status === 400) {
+        const data = await res.json().catch(() => ({}))
+        const detail = (data as { detail?: unknown }).detail
+        if (detail && typeof detail === 'object' && (detail as { errors?: Record<string, string> }).errors) {
+          setRegErrors((detail as { errors: Record<string, string> }).errors)
+          setReportMsg('Please correct the highlighted fields.')
+        } else if (force && !dupJustification.trim()) {
+          setReportMsg('Justification is required to register a possible duplicate.')
+        } else setReportMsg('Invalid input.')
+        return
+      }
+      if (res.status === 503) { setReportMsg('Profile service is temporarily unavailable.'); return }
+      if (res.status === 401) { setReportMsg('Your session has expired. Please sign in again.'); return }
+      if (res.status === 403) { setReportMsg('You do not have authority access to register profiles.'); return }
+      if (!res.ok) { setReportMsg('Error saving. Check backend.'); return }
       const data = await res.json()
-      if (data.culprit_id) { setReportMsg(`✓ Registered: ${data.culprit_id}`); setReportForm({ name: '', physical_description: '', behavioral_traits: '', location: '' }) }
-      else setReportMsg(`Error: ${JSON.stringify(data)}`)
+      if (data.duplicate_found) { setDupCandidates(data.candidates || []); setShowDupDialog(true); return }
+      const newId = data.profile_id || data.culprit_id
+      if (data.success && newId) {
+        setReportMsg(`✓ Registered as investigative record: ${newId}`)
+        setReportForm({ name: '', physical_description: '', behavioral_traits: '', location: '' })
+        setShowDupDialog(false); setDupCandidates([]); setDupJustification('')
+      } else setReportMsg('Error saving profile.')
     } catch { setReportMsg('Error saving. Check backend.') }
     finally { setReporting(false) }
+  }
+
+  function reportCulprit() {
+    if (!reportForm.physical_description || !reportForm.behavioral_traits) return
+    submitRegister(false)
   }
 
   const sevCfg: Record<string, { bg: string; text: string; icon: React.ReactNode }> = {
@@ -454,12 +639,17 @@ export default function AuthorityPage() {
           <Shield size={44} style={{ color: '#be185d', display: 'block', margin: '0 auto 14px' }} />
           <h2 style={{ fontFamily: 'Georgia', fontSize: 'clamp(1.15rem, 4vw, 1.4rem)', color: '#1a0a12', marginBottom: 6 }}>Authority Access</h2>
           <p style={{ fontSize: '0.8rem', color: '#8b6b7d', marginBottom: 20 }}>Restricted to authorized officers</p>
-          <input type="password" placeholder="Enter access code" value={pass}
+          <input type="text" placeholder="Badge / Officer ID" value={badge} autoComplete="username"
+            onChange={e => { setBadge(e.target.value); setPassError(false) }}
+            onKeyDown={e => e.key === 'Enter' && tryUnlock()}
+            style={{ width: '100%', padding: '12px 14px', borderRadius: 10, border: passError ? '2px solid #dc2626' : '2px solid #e2d6e0', fontSize: '0.9rem', outline: 'none', marginBottom: 8, boxSizing: 'border-box' }}
+          />
+          <input type="password" placeholder="Password" value={pass} autoComplete="current-password"
             onChange={e => { setPass(e.target.value); setPassError(false) }}
             onKeyDown={e => e.key === 'Enter' && tryUnlock()}
             style={{ width: '100%', padding: '12px 14px', borderRadius: 10, border: passError ? '2px solid #dc2626' : '2px solid #e2d6e0', fontSize: '0.9rem', outline: 'none', marginBottom: 8, boxSizing: 'border-box' }}
           />
-          {passError && <p style={{ fontSize: '0.75rem', color: '#dc2626', marginBottom: 8 }}>❌ Wrong code. Try again.</p>}
+          {passError && <p style={{ fontSize: '0.75rem', color: '#dc2626', marginBottom: 8 }}>❌ Invalid credentials. Try again.</p>}
           <button onClick={tryUnlock} disabled={authLoading} className="btn-primary" style={{ width: '100%', marginTop: 4, padding: '12px 20px' }}>
             {authLoading ? 'Verifying...' : 'Enter Dashboard'}
           </button>
@@ -481,7 +671,17 @@ export default function AuthorityPage() {
             <div style={{ fontSize: '0.62rem', color: '#8b6b7d' }}>Officers Only</div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {unlocked && (
+            <div title={`${unreadCount} unread notification${unreadCount !== 1 ? 's' : ''}`} style={{ position: 'relative', display: 'flex', alignItems: 'center', color: '#f472b6', padding: 4 }}>
+              <Bell size={17} />
+              {unreadCount > 0 && (
+                <span style={{ position: 'absolute', top: -4, right: -6, background: '#dc2626', color: 'white', borderRadius: 10, fontSize: '0.6rem', fontWeight: 700, minWidth: 15, height: 15, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px' }}>
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
+            </div>
+          )}
           <button onClick={fetchCases} style={{ background: 'none', border: '1px solid #f472b6', borderRadius: 8, padding: '7px 10px', cursor: 'pointer', color: '#f472b6', display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.75rem' }}>
             <RefreshCw size={13} /><span>Refresh</span>
           </button>
@@ -489,10 +689,23 @@ export default function AuthorityPage() {
         </div>
       </div>
 
+      {/* Real-time "New SOS Received" indicator */}
+      {unlocked && newSosBanner && (
+        <div role="alert" style={{ background: 'linear-gradient(135deg,#dc2626,#b91c1c)', color: 'white', padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, animation: 'havenSosPulse 1.6s ease-in-out infinite' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.85rem', fontWeight: 700 }}>
+            <ShieldAlert size={17} /> New SOS Received — {newSosBanner}
+          </div>
+          <button onClick={() => { setTab('cases'); setNewSosBanner(null) }} style={{ background: 'rgba(255,255,255,0.2)', border: '1px solid rgba(255,255,255,0.5)', color: 'white', borderRadius: 8, padding: '5px 12px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600 }}>
+            View & acknowledge
+          </button>
+        </div>
+      )}
+      <style>{`@keyframes havenSosPulse{0%,100%{opacity:1}50%{opacity:0.82}}`}</style>
+
 
       {/* Tabs */}
       <div style={{ background: '#2d1b2e', padding: '0 16px', display: 'flex', gap: 0, overflowX: 'auto' }}>
-        {([['cases', 'SOS Cases', <Shield key="s" size={13} />], ['decode', 'Decode', <Eye key="e" size={13} />], ['culprit', 'Culprit DB', <Users key="u" size={13} />]] as [Tab, string, React.ReactNode][]).map(([id, label, icon]) => (
+        {([['cases', 'SOS Cases', <Shield key="s" size={13} />], ['decode', 'Decode', <Eye key="e" size={13} />], ['culprit', 'Case & Profile Intelligence', <Users key="u" size={13} />]] as [Tab, string, React.ReactNode][]).map(([id, label, icon]) => (
           <button key={id} onClick={() => setTab(id)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: 'clamp(10px,2vw,14px) clamp(12px,3vw,20px)', background: 'none', border: 'none', cursor: 'pointer', color: tab === id ? '#f472b6' : '#8b6b7d', fontSize: 'clamp(0.75rem, 2.5vw, 0.85rem)', fontWeight: tab === id ? 700 : 400, borderBottom: tab === id ? '2px solid #f472b6' : '2px solid transparent', whiteSpace: 'nowrap', transition: 'all 0.2s' }}>
             {icon}{label}
           </button>
@@ -694,14 +907,34 @@ export default function AuthorityPage() {
                             </button>
                           </div>
 
-                          {/* Status buttons */}
-                          <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
-                            {(['in_progress', 'resolved'] as string[]).filter(s => s !== c.status).map(s => (
-                              <button key={s} onClick={() => updateCaseStatus(c.case_id, s)} style={{ fontSize: '0.67rem', padding: '3px 8px', borderRadius: 6, background: s === 'resolved' ? '#dcfce7' : '#fef9c3', color: s === 'resolved' ? '#15803d' : '#a16207', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
-                                Mark {s.replace('_', ' ')}
-                              </button>
-                            ))}
+                          {/* Status / triage buttons — full SOS lifecycle workflow */}
+                          <div style={{ display: 'flex', gap: 4, marginTop: 2, flexWrap: 'wrap' }}>
+                            {([
+                              ['ACKNOWLEDGED', 'Acknowledge', '#dbeafe', '#1d4ed8'],
+                              ['IN_PROGRESS', 'Mark in progress', '#fef9c3', '#a16207'],
+                              ['RESOLVED', 'Mark resolved', '#dcfce7', '#15803d'],
+                            ] as [string, string, string, string][])
+                              .filter(([s]) => (c.status || '').toUpperCase() !== s)
+                              .map(([s, label, bg, color]) => (
+                                <button key={s} onClick={() => updateCaseStatus(c.case_id, s)} style={{ fontSize: '0.67rem', padding: '3px 8px', borderRadius: 6, background: bg, color, border: 'none', cursor: 'pointer', fontWeight: 600 }}>
+                                  {label}
+                                </button>
+                              ))}
+                            <button onClick={() => toggleLifecycle(c.case_id)} style={{ fontSize: '0.67rem', padding: '3px 8px', borderRadius: 6, background: lifecycleCaseId === c.case_id ? '#be185d' : '#f8f4f6', color: lifecycleCaseId === c.case_id ? 'white' : '#8b6b7d', border: '1px solid #e2d6e0', cursor: 'pointer', fontWeight: 600 }}>
+                              {lifecycleCaseId === c.case_id ? 'Hide lifecycle' : 'View lifecycle'}
+                            </button>
                           </div>
+
+                          {/* Lifecycle timeline */}
+                          {lifecycleCaseId === c.case_id && (
+                            <div style={{ marginTop: 10, background: '#faf5f8', border: '1px solid #e2d6e0', borderRadius: 10, padding: '8px 12px' }}>
+                              {lifecycleLoading ? (
+                                <div style={{ fontSize: '0.75rem', color: '#8b6b7d', padding: 8 }}>Loading lifecycle…</div>
+                              ) : (
+                                <SOSLifecycle currentStatus={(c.status || 'CREATED').toUpperCase()} statusHistory={lifecycleHistory} />
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -765,82 +998,186 @@ export default function AuthorityPage() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 300px), 1fr))', gap: 16 }}>
             {/* Search */}
             <div style={{ background: 'white', borderRadius: 16, padding: 'clamp(18px,4vw,28px)', border: '1px solid #e2d6e0' }}>
-              <h3 style={{ fontFamily: 'Georgia', fontSize: 'clamp(0.95rem, 3vw, 1.1rem)', color: '#1a0a12', marginBottom: 8 }}>Find Culprit Profiles</h3>
+              <h3 style={{ fontFamily: 'Georgia', fontSize: 'clamp(0.95rem, 3vw, 1.1rem)', color: '#1a0a12', marginBottom: 8 }}>Search Case &amp; Profile Records</h3>
+              <p style={{ fontSize: '0.7rem', color: '#8b6b7d', marginBottom: 10, lineHeight: 1.5, fontStyle: 'italic' }}>
+                Records are investigative references, not confirmations of guilt. Treat all matches as leads for human verification.
+              </p>
 
               {/* Search mode toggle */}
               <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-                <button onClick={() => { setSearchMode('name'); setMatches([]); setSearchType('') }}
+                <button onClick={() => { setSearchMode('name'); setMatches([]); setSearchType(''); setSearchError(''); setSearchNotice(''); setDegraded(false); setExplainOpen({}) }}
                   style={{ flex: 1, padding: '7px 10px', borderRadius: 8, border: searchMode === 'name' ? '2px solid #be185d' : '1px solid #e2d6e0', background: searchMode === 'name' ? 'rgba(190,24,93,0.08)' : 'white', color: searchMode === 'name' ? '#be185d' : '#8b6b7d', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}>
                   🔍 Search by Name
                 </button>
-                <button onClick={() => { setSearchMode('description'); setMatches([]); setSearchType('') }}
+                <button onClick={() => { setSearchMode('description'); setMatches([]); setSearchType(''); setSearchError(''); setSearchNotice(''); setDegraded(false); setExplainOpen({}) }}
                   style={{ flex: 1, padding: '7px 10px', borderRadius: 8, border: searchMode === 'description' ? '2px solid #be185d' : '1px solid #e2d6e0', background: searchMode === 'description' ? 'rgba(190,24,93,0.08)' : 'white', color: searchMode === 'description' ? '#be185d' : '#8b6b7d', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}>
                   🤖 Search by Description
                 </button>
               </div>
 
               <textarea value={culpritDesc} onChange={e => setCulpritDesc(e.target.value)}
-                placeholder={searchMode === 'name' ? 'Enter full name, e.g. Manav Choudhary' : 'Describe appearance/behavior, e.g. tall male, aggressive, age 30-35, black beard...'}
+                placeholder={searchMode === 'name' ? 'Enter full or partial name...' : 'Example: tall, medium build, black jacket, scar on left cheek, seen near Ghaziabad...'}
                 style={{ width: '100%', height: 80, padding: 10, borderRadius: 10, border: '1px solid #e2d6e0', fontSize: 'clamp(0.8rem, 2.5vw, 0.85rem)', resize: 'vertical', outline: 'none', fontFamily: 'Georgia' }}
               />
-              <p style={{ fontSize: '0.72rem', color: '#8b6b7d', marginTop: 4, marginBottom: 8 }}>
-                {searchMode === 'name' ? 'Searches by exact or partial name match.' : 'AI vector search — only shows results above 75% similarity.'}
+              <p style={{ fontSize: '0.72rem', color: '#8b6b7d', marginTop: 4, marginBottom: 8, lineHeight: 1.5 }}>
+                {searchMode === 'name'
+                  ? 'Searches by exact or partial name — no similarity threshold required.'
+                  : 'AI-assisted similarity search. Matches are investigative leads and require human verification.'}
               </p>
 
               <button onClick={findCulpritMatches} disabled={searching || !culpritDesc.trim()} className="btn-primary" style={{ width: '100%', opacity: searching || !culpritDesc.trim() ? 0.6 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
                 <Search size={14} />{searching ? 'Searching...' : 'Find'}
               </button>
 
-              {/* Results */}
-              {matches.length > 0 && (
-                <div style={{ marginTop: 16 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                    <p style={{ fontSize: '0.78rem', fontWeight: 700, color: '#be185d' }}>
-                      {matches.length} result{matches.length !== 1 ? 's' : ''} found
-                    </p>
-                    <span style={{ fontSize: '0.68rem', background: searchType === 'exact_name' ? '#dcfce7' : searchType === 'partial_name' ? '#fef9c3' : 'rgba(190,24,93,0.08)', color: searchType === 'exact_name' ? '#15803d' : searchType === 'partial_name' ? '#a16207' : '#be185d', padding: '2px 8px', borderRadius: 50 }}>
-                      {searchType === 'exact_name' ? '✓ Exact match' : searchType === 'partial_name' ? '~ Partial match' : 'AI similarity'}
-                    </span>
-                  </div>
-                  {matches.map((m, i) => (
-                    <div key={i} style={{ background: '#f8f4f6', borderRadius: 10, padding: 12, marginBottom: 8, border: searchType === 'exact_name' ? '1.5px solid #86efac' : '1px solid #e2d6e0' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
-                        <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#1a0a12' }}>{m.name || 'Unknown'}</span>
-                        {m.score !== undefined && (
-                          <span style={{ fontSize: '0.68rem', background: (m.score >= 0.9) ? '#dcfce7' : (m.score >= 0.75) ? '#fef9c3' : 'rgba(190,24,93,0.1)', color: (m.score >= 0.9) ? '#15803d' : (m.score >= 0.75) ? '#a16207' : '#be185d', padding: '2px 8px', borderRadius: 50, fontWeight: 700 }}>
-                            {(m.score * 100).toFixed(0)}%
-                          </span>
-                        )}
-                      </div>
-                      <p style={{ fontSize: '0.75rem', color: '#8b6b7d', lineHeight: 1.5 }}><strong>Physical:</strong> {m.physical_description}</p>
-                      <p style={{ fontSize: '0.75rem', color: '#8b6b7d', lineHeight: 1.5 }}><strong>Behavior:</strong> {m.behavioral_traits}</p>
-                      {m.location && <p style={{ fontSize: '0.72rem', color: '#be185d', marginTop: 4 }}>📍 {m.location}</p>}
-                    </div>
-                  ))}
+              {/* Real failure — never shown as an empty result (req 26) */}
+              {searchError && (
+                <div role="alert" style={{ marginTop: 14, background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', borderRadius: 10, padding: '10px 12px', fontSize: '0.75rem', lineHeight: 1.5 }}>
+                  {searchError}
                 </div>
               )}
-              {matches.length === 0 && culpritDesc && !searching && (
-                <p style={{ marginTop: 12, fontSize: '0.78rem', color: '#8b6b7d', textAlign: 'center' }}>
-                  {searchMode === 'name' ? 'No profile found with that name.' : 'No matches above threshold. Try different descriptors.'}
-                </p>
+              {/* Keyword-fallback / degraded notice (req 27) */}
+              {degraded && !searchError && (
+                <div style={{ marginTop: 14, background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', borderRadius: 10, padding: '10px 12px', fontSize: '0.73rem', lineHeight: 1.5 }}>
+                  {searchNotice || 'Semantic similarity unavailable; showing keyword matches.'}
+                </div>
+              )}
+
+              {/* Search results — investigative leads only (req 8) */}
+              {matches.length > 0 && (
+                <div style={{ marginTop: 16 }}>
+                  <p style={{ fontSize: '0.78rem', fontWeight: 700, color: '#be185d', marginBottom: 4 }}>
+                    {matches.length} potential match{matches.length !== 1 ? 'es' : ''} — human verification required
+                  </p>
+                  <p style={{ fontSize: '0.68rem', color: '#8b6b7d', marginBottom: 10 }}>
+                    {queryType === 'name' ? 'Name search' : queryType === 'mixed' ? 'Name + description search' : 'Description similarity search'}
+                    {(degraded || searchType === 'keyword_fallback') ? ' · keyword matches' : ''}
+                  </p>
+                  {matches.map((m, i) => {
+                    const pct = typeof m.match_score === 'number' ? Math.round(m.match_score * 100) : (typeof m.score === 'number' ? Math.round(m.score * 100) : null)
+                    const lvl = m.match_level || ''
+                    const lvlLabel = lvl === 'high' ? 'High similarity' : lvl === 'moderate' ? 'Moderate similarity' : lvl === 'weak' ? 'Weak similarity' : ''
+                    const lvlBg = lvl === 'high' ? '#dcfce7' : lvl === 'moderate' ? '#fef9c3' : 'rgba(190,24,93,0.08)'
+                    const lvlColor = lvl === 'high' ? '#15803d' : lvl === 'moderate' ? '#a16207' : '#be185d'
+                    const pctLabel = queryType === 'description' ? 'Description similarity' : 'Match strength'
+                    const pid = m.profile_id || m.culprit_id
+                    return (
+                      <div key={i} style={{ background: '#f8f4f6', borderRadius: 12, padding: 14, marginBottom: 10, border: '1px solid #e2d6e0' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#be185d', textTransform: 'uppercase', letterSpacing: 0.4 }}>Potential Match #{i + 1}</span>
+                          {lvlLabel && (
+                            <span style={{ fontSize: '0.66rem', background: lvlBg, color: lvlColor, padding: '2px 8px', borderRadius: 50, fontWeight: 700 }}>{lvlLabel}</span>
+                          )}
+                        </div>
+                        <div style={{ marginBottom: 6 }}>
+                          <span style={{ fontSize: '0.62rem', color: '#8b6b7d', display: 'block' }}>Name</span>
+                          <span style={{ fontSize: '0.92rem', fontWeight: 700, color: '#1a0a12' }}>{m.name || 'Not recorded'}</span>
+                        </div>
+                        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 8 }}>
+                          <div>
+                            <span style={{ fontSize: '0.62rem', color: '#8b6b7d', display: 'block' }}>Profile ID</span>
+                            <span style={{ fontSize: '0.76rem', fontFamily: 'monospace', color: '#1a0a12' }}>{pid}</span>
+                          </div>
+                          {m.location && (
+                            <div>
+                              <span style={{ fontSize: '0.62rem', color: '#8b6b7d', display: 'block' }}>Last known location</span>
+                              <span style={{ fontSize: '0.76rem', color: '#1a0a12' }}>📍 {m.location}</span>
+                            </div>
+                          )}
+                          {pct !== null && (
+                            <div>
+                              <span style={{ fontSize: '0.62rem', color: '#8b6b7d', display: 'block' }}>{pctLabel}</span>
+                              <span style={{ fontSize: '0.76rem', fontWeight: 700, color: '#be185d' }}>{pct}%</span>
+                            </div>
+                          )}
+                        </div>
+                        {Array.isArray(m.match_factors) && m.match_factors.length > 0 && (
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                            {m.match_factors.map((f, fi) => (
+                              <span key={fi} style={{ fontSize: '0.64rem', padding: '2px 8px', borderRadius: 50, background: f.strength === 'strong' ? '#dcfce7' : f.strength === 'moderate' ? '#fef9c3' : '#f1e7ee', color: f.strength === 'strong' ? '#15803d' : f.strength === 'moderate' ? '#a16207' : '#8b6b7d', fontWeight: 600 }}>{f.label}</span>
+                            ))}
+                          </div>
+                        )}
+                        <div style={{ fontSize: '0.68rem', color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '5px 8px', marginBottom: 8 }}>
+                          Status: Investigative lead — human verification required
+                        </div>
+                        <button onClick={() => setExplainOpen(p => ({ ...p, [i]: !p[i] }))}
+                          style={{ background: 'none', border: 'none', color: '#be185d', fontSize: '0.7rem', fontWeight: 600, cursor: 'pointer', padding: 0, marginBottom: explainOpen[i] ? 6 : 0 }}>
+                          {explainOpen[i] ? '▾ Hide explanation' : '▸ Why this match?'}
+                        </button>
+                        {explainOpen[i] && (
+                          <div style={{ background: 'white', border: '1px solid #e2d6e0', borderRadius: 8, padding: '8px 10px', marginBottom: 8, fontSize: '0.7rem', color: '#5b4652', lineHeight: 1.5 }}>
+                            <p style={{ margin: 0 }}>The system found similarities between the query and this stored record. This is a retrieval result, not an identification.</p>
+                            {m.match_summary && <p style={{ margin: '6px 0 0' }}>{m.match_summary}</p>}
+                            {Array.isArray(m.match_factors) && m.match_factors.length > 0 && (
+                              <p style={{ margin: '6px 0 0' }}><strong>Matched signals:</strong> {m.match_factors.map(f => f.label).join(', ')}.</p>
+                            )}
+                            {!m.location && <p style={{ margin: '6px 0 0', color: '#8b6b7d' }}>Not matched: last known location (missing information).</p>}
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+                          <button onClick={() => viewProfile(pid)}
+                            style={{ fontSize: '0.68rem', padding: '5px 10px', borderRadius: 8, border: '1px solid #be185d', background: 'white', color: '#be185d', fontWeight: 600, cursor: 'pointer' }}>View Profile</button>
+                          <button onClick={() => setCompareMatch(m)}
+                            style={{ fontSize: '0.68rem', padding: '5px 10px', borderRadius: 8, border: '1px solid #e2d6e0', background: 'white', color: '#5b4652', fontWeight: 600, cursor: 'pointer' }}>Compare Details</button>
+                          {Array.isArray(m.associated_cases) && m.associated_cases.length > 0 && (
+                            <button onClick={() => viewProfile(pid)}
+                              style={{ fontSize: '0.68rem', padding: '5px 10px', borderRadius: 8, border: '1px solid #e2d6e0', background: 'white', color: '#5b4652', fontWeight: 600, cursor: 'pointer' }}>View Related Cases ({m.associated_cases.length})</button>
+                          )}
+                          <button onClick={() => setFlaggedMatch(p => ({ ...p, [i]: true }))}
+                            style={{ fontSize: '0.68rem', padding: '5px 10px', borderRadius: 8, border: '1px solid #e2d6e0', background: 'white', color: '#8b6b7d', fontWeight: 600, cursor: 'pointer' }}>Report Incorrect Match</button>
+                        </div>
+                        {flaggedMatch[i] && (
+                          <p style={{ fontSize: '0.66rem', color: '#8b6b7d', marginTop: 6, marginBottom: 0 }}>Noted — please record incorrect matches in the case file for human review.</p>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              {/* No-match experience (req 20) — only when the search truly succeeded but was empty */}
+              {matches.length === 0 && culpritDesc && !searching && !searchError && (
+                <div style={{ marginTop: 14, background: '#f8f4f6', border: '1px solid #e2d6e0', borderRadius: 12, padding: 14 }}>
+                  <p style={{ fontSize: '0.8rem', fontWeight: 700, color: '#1a0a12', marginBottom: 4 }}>
+                    {searchMode === 'name' ? 'No matching record found.' : 'No strong description matches were found.'}
+                  </p>
+                  <p style={{ fontSize: '0.72rem', color: '#8b6b7d', marginBottom: 10, lineHeight: 1.5 }}>
+                    {searchMode === 'name'
+                      ? 'Try a partial name or an alternate spelling.'
+                      : 'Try broadening the description, or search by name or location.'}
+                  </p>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {searchMode === 'description' && (
+                      <button onClick={() => { setSearchMode('name'); setMatches([]); setSearchType(''); setSearchNotice(''); setDegraded(false) }}
+                        style={{ fontSize: '0.68rem', padding: '5px 10px', borderRadius: 8, border: '1px solid #be185d', background: 'white', color: '#be185d', fontWeight: 600, cursor: 'pointer' }}>Search by name</button>
+                    )}
+                    {searchMode === 'name' && (
+                      <button onClick={() => { setSearchMode('description'); setMatches([]); setSearchType(''); setSearchNotice(''); setDegraded(false) }}
+                        style={{ fontSize: '0.68rem', padding: '5px 10px', borderRadius: 8, border: '1px solid #be185d', background: 'white', color: '#be185d', fontWeight: 600, cursor: 'pointer' }}>Search by description</button>
+                    )}
+                    <button onClick={() => { setCulpritDesc(''); setMatches([]) }}
+                      style={{ fontSize: '0.68rem', padding: '5px 10px', borderRadius: 8, border: '1px solid #e2d6e0', background: 'white', color: '#5b4652', fontWeight: 600, cursor: 'pointer' }}>Clear query</button>
+                  </div>
+                </div>
               )}
             </div>
 
             {/* Register */}
             <div style={{ background: 'white', borderRadius: 16, padding: 'clamp(18px,4vw,28px)', border: '1px solid #e2d6e0' }}>
               <h3 style={{ fontFamily: 'Georgia', fontSize: 'clamp(0.95rem, 3vw, 1.1rem)', color: '#1a0a12', marginBottom: 8 }}>Register New Profile</h3>
-              <p style={{ color: '#8b6b7d', fontSize: 'clamp(0.75rem, 2vw, 0.82rem)', marginBottom: 14, lineHeight: 1.5 }}>Profile will be embedded and stored for future searches.</p>
-              {[
-                { key: 'name', label: 'Name (optional)', placeholder: 'Full name if known' },
-                { key: 'physical_description', label: 'Physical Description *', placeholder: 'Height, build, age...' },
-                { key: 'behavioral_traits', label: 'Behavioral Traits *', placeholder: 'Aggressive, controlling...' },
-                { key: 'location', label: 'Last Known Location', placeholder: 'City, area...' },
-              ].map(field => (
+              <p style={{ color: '#8b6b7d', fontSize: 'clamp(0.75rem, 2vw, 0.82rem)', marginBottom: 14, lineHeight: 1.5 }}>Stored as an investigative reference, searchable by Authority users only. All entries require human verification and are not confirmations of guilt.</p>
+              {([
+                { key: 'name', label: 'Name (optional)', placeholder: 'Full name if known', helper: '' },
+                { key: 'physical_description', label: 'Physical Description *', placeholder: 'Height, approximate build, age range, clothing, distinguishing physical features...', helper: '' },
+                { key: 'behavioral_traits', label: 'Behavioral Traits *', placeholder: 'e.g. seen loitering, followed the reporter, raised voice...', helper: 'Observed behavior only. Avoid unverified allegations — not a personality or criminal classification.' },
+                { key: 'location', label: 'Last Known Location', placeholder: 'City/area and approximate time if known', helper: '' },
+              ] as { key: string; label: string; placeholder: string; helper: string }[]).map(field => (
                 <div key={field.key} style={{ marginBottom: 12 }}>
                   <label style={{ fontSize: '0.75rem', fontWeight: 600, color: '#1a0a12', display: 'block', marginBottom: 4 }}>{field.label}</label>
                   <input value={reportForm[field.key as keyof typeof reportForm]} onChange={e => setReportForm(prev => ({ ...prev, [field.key]: e.target.value }))} placeholder={field.placeholder}
-                    style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid #e2d6e0', fontSize: 'clamp(0.8rem, 2.5vw, 0.83rem)', outline: 'none' }}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: regErrors[field.key] ? '1.5px solid #dc2626' : '1px solid #e2d6e0', fontSize: 'clamp(0.8rem, 2.5vw, 0.83rem)', outline: 'none' }}
                   />
+                  {field.helper && <p style={{ fontSize: '0.66rem', color: '#8b6b7d', marginTop: 3, lineHeight: 1.4 }}>{field.helper}</p>}
+                  {regErrors[field.key] && <p style={{ fontSize: '0.66rem', color: '#dc2626', marginTop: 3 }}>{regErrors[field.key]}</p>}
                 </div>
               ))}
               {reportMsg && <p style={{ fontSize: '0.78rem', color: reportMsg.startsWith('✓') ? '#15803d' : '#dc2626', marginBottom: 10 }}>{reportMsg}</p>}
@@ -851,6 +1188,110 @@ export default function AuthorityPage() {
           </div>
         )}
       </div>
+
+      {/* ── Duplicate-detection dialog (req 13) ── */}
+      {showDupDialog && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 16 }}>
+          <div style={{ background: 'white', borderRadius: 18, padding: 22, maxWidth: 460, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <h3 style={{ fontFamily: 'Georgia', fontSize: '1.05rem', color: '#1a0a12', margin: 0 }}>Possible existing record found</h3>
+              <button onClick={() => { setShowDupDialog(false); setDupJustification('') }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><X size={18} /></button>
+            </div>
+            <p style={{ fontSize: '0.72rem', color: '#8b6b7d', marginBottom: 12, lineHeight: 1.5 }}>One or more records look similar. Review before creating a new one to avoid duplicates.</p>
+            {dupCandidates.map((c, i) => (
+              <div key={i} style={{ background: '#f8f4f6', border: '1px solid #e2d6e0', borderRadius: 10, padding: 10, marginBottom: 8 }}>
+                <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#1a0a12' }}>{c.name || 'Not recorded'}</div>
+                <div style={{ fontSize: '0.68rem', fontFamily: 'monospace', color: '#8b6b7d' }}>{c.profile_id}</div>
+                {c.location && <div style={{ fontSize: '0.7rem', color: '#be185d', marginTop: 2 }}>📍 {c.location}</div>}
+                {Array.isArray(c.reasons) && c.reasons.length > 0 && <div style={{ fontSize: '0.66rem', color: '#8b6b7d', marginTop: 3 }}>Matched on: {c.reasons.join(', ')}</div>}
+                <button onClick={() => { viewProfile(c.profile_id); setShowDupDialog(false) }} style={{ marginTop: 6, fontSize: '0.66rem', padding: '4px 9px', borderRadius: 7, border: '1px solid #be185d', background: 'white', color: '#be185d', fontWeight: 600, cursor: 'pointer' }}>Use existing record</button>
+              </div>
+            ))}
+            <label style={{ fontSize: '0.7rem', fontWeight: 600, color: '#1a0a12', display: 'block', marginTop: 6, marginBottom: 4 }}>Justification (required to register anyway)</label>
+            <textarea value={dupJustification} onChange={e => setDupJustification(e.target.value)} placeholder="Why is this a distinct record?" style={{ width: '100%', height: 54, padding: 8, borderRadius: 8, border: '1px solid #e2d6e0', fontSize: '0.75rem', resize: 'vertical', outline: 'none' }} />
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button onClick={() => { setShowDupDialog(false); setDupJustification('') }} style={{ flex: 1, fontSize: '0.74rem', padding: '8px', borderRadius: 8, border: '1px solid #e2d6e0', background: 'white', color: '#5b4652', fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={() => submitRegister(true)} disabled={reporting || !dupJustification.trim()} style={{ flex: 1, fontSize: '0.74rem', padding: '8px', borderRadius: 8, border: 'none', background: '#be185d', color: 'white', fontWeight: 600, cursor: 'pointer', opacity: reporting || !dupJustification.trim() ? 0.6 : 1 }}>Register anyway</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Profile detail modal (req 16) ── */}
+      {detailProfile && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 16 }}>
+          <div style={{ background: 'white', borderRadius: 18, padding: 22, maxWidth: 480, width: '100%', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <h3 style={{ fontFamily: 'Georgia', fontSize: '1.05rem', color: '#1a0a12', margin: 0 }}>Profile Record</h3>
+              <button onClick={() => setDetailProfile(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><X size={18} /></button>
+            </div>
+            <div style={{ fontSize: '0.66rem', color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '5px 8px', marginBottom: 12 }}>Investigative reference — human verification required. Not a confirmation of guilt.</div>
+            {[
+              { l: 'Profile ID', v: detailProfile.profile_id || detailProfile.culprit_id, mono: true },
+              { l: 'Name', v: detailProfile.name || 'Not recorded' },
+              { l: 'Physical description', v: detailProfile.physical_description },
+              { l: 'Behavioral observations', v: detailProfile.behavioral_traits },
+              { l: 'Last known location', v: detailProfile.location || 'Unknown' },
+              { l: 'Created', v: detailProfile.created_at || '—' },
+              { l: 'Updated', v: detailProfile.updated_at || '—' },
+            ].map((row, i) => (
+              <div key={i} style={{ marginBottom: 10 }}>
+                <span style={{ fontSize: '0.62rem', color: '#8b6b7d', display: 'block' }}>{row.l}</span>
+                <span style={{ fontSize: '0.8rem', color: '#1a0a12', fontFamily: row.mono ? 'monospace' : 'inherit', lineHeight: 1.5 }}>{row.v}</span>
+              </div>
+            ))}
+            <div style={{ marginBottom: 10 }}>
+              <span style={{ fontSize: '0.62rem', color: '#8b6b7d', display: 'block', marginBottom: 4 }}>Associated cases</span>
+              {Array.isArray(detailProfile.associated_cases) && detailProfile.associated_cases.length > 0 ? (
+                detailProfile.associated_cases.map((ac, i) => (
+                  <div key={i} style={{ fontSize: '0.72rem', color: '#1a0a12', background: '#f8f4f6', border: '1px solid #e2d6e0', borderRadius: 8, padding: '6px 8px', marginBottom: 4 }}>
+                    <span style={{ fontFamily: 'monospace' }}>{ac.case_id}</span> — {ac.relationship}
+                  </div>
+                ))
+              ) : <span style={{ fontSize: '0.72rem', color: '#8b6b7d' }}>None linked.</span>}
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <button onClick={() => { setCompareMatch(detailProfile); setDetailProfile(null) }} style={{ flex: 1, fontSize: '0.74rem', padding: '8px', borderRadius: 8, border: '1px solid #be185d', background: 'white', color: '#be185d', fontWeight: 600, cursor: 'pointer' }}>Compare with query</button>
+              <button onClick={() => setDetailProfile(null)} style={{ flex: 1, fontSize: '0.74rem', padding: '8px', borderRadius: 8, border: '1px solid #e2d6e0', background: 'white', color: '#5b4652', fontWeight: 600, cursor: 'pointer' }}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Compare mode (req 17) — query vs profile, never probability of guilt ── */}
+      {compareMatch && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 16 }}>
+          <div style={{ background: 'white', borderRadius: 18, padding: 22, maxWidth: 620, width: '100%', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <h3 style={{ fontFamily: 'Georgia', fontSize: '1.05rem', color: '#1a0a12', margin: 0 }}>Compare: Query vs Record</h3>
+              <button onClick={() => setCompareMatch(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><X size={18} /></button>
+            </div>
+            <div style={{ fontSize: '0.66rem', color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '5px 8px', marginBottom: 12 }}>Side-by-side comparison for human review only. Similarity is not proof of identity or guilt.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: '0.66rem', fontWeight: 700, color: '#be185d', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>Your query</div>
+                <div style={{ fontSize: '0.62rem', color: '#8b6b7d' }}>{searchMode === 'name' ? 'Name search' : 'Description search'}</div>
+                <div style={{ fontSize: '0.78rem', color: '#1a0a12', background: '#f8f4f6', border: '1px solid #e2d6e0', borderRadius: 8, padding: 8, marginTop: 4, lineHeight: 1.5 }}>{culpritDesc || '—'}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '0.66rem', fontWeight: 700, color: '#be185d', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>Stored record</div>
+                {[
+                  { l: 'Name', v: compareMatch.name || 'Not recorded' },
+                  { l: 'Physical', v: compareMatch.physical_description },
+                  { l: 'Behavior', v: compareMatch.behavioral_traits },
+                  { l: 'Location', v: compareMatch.location || 'Unknown' },
+                ].map((row, i) => (
+                  <div key={i} style={{ marginBottom: 6 }}>
+                    <span style={{ fontSize: '0.6rem', color: '#8b6b7d', display: 'block' }}>{row.l}</span>
+                    <span style={{ fontSize: '0.74rem', color: '#1a0a12', lineHeight: 1.5 }}>{row.v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <button onClick={() => setCompareMatch(null)} style={{ width: '100%', marginTop: 12, fontSize: '0.74rem', padding: '8px', borderRadius: 8, border: '1px solid #e2d6e0', background: 'white', color: '#5b4652', fontWeight: 600, cursor: 'pointer' }}>Close</button>
+          </div>
+        </div>
+      )}
 
       {/* ── Live GPS Tracking Modal ── */}
       {activeLiveTrackCase && (

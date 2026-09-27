@@ -281,6 +281,15 @@ export default function VoiceSOSPage() {
   const [whisperMode, setWhisperMode] = useState(false)
   const [isStreamingLocation, setIsStreamingLocation] = useState(false)
 
+  // Voice AI pipeline (transcript -> intent -> risk). Analysis only; never auto-sends.
+  const [voiceAI, setVoiceAI] = useState<any>(null)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [aiError, setAiError] = useState('')
+  // Real-mode SOS trigger feedback (distinct from AI/analysis errors). Holds a
+  // classified, human-readable reason when POST /voice-sos/trigger does not
+  // succeed, so a valid 400 business error is never shown as a "connection" fault.
+  const [triggerError, setTriggerError] = useState('')
+
   // Refs
   const recognitionRef = useRef<any>(null)
   const isEnabledRef = useRef(config.enabled)
@@ -808,23 +817,37 @@ export default function VoiceSOSPage() {
         }
       }
 
+      // Enabling model: setting a safe word is the explicit act that turns Voice
+      // SOS on. If it was already enabled, it stays enabled. The mic toggle can
+      // later disable/re-enable — and now persists that too (see toggleEnable).
+      const willEnable = config.enabled || !!safeWord
+
+      // Only send safe_word when the user actually entered a NEW one. Omitting it
+      // tells the backend to PRESERVE the stored PBKDF2 hash+salt (no clobber);
+      // the old 'unchanged' literal used to overwrite the real safe word.
+      const payload: Record<string, unknown> = {
+        user_id: userId,
+        enabled: willEnable,
+        cooldown_seconds: config.cooldown_seconds || 60,
+        contacts: contacts.map(c => ({ name: c.name, phone: c.phone, email: c.email || '', priority: c.priority || 1 }))
+      }
+      if (safeWord) payload.safe_word = safeWord
+
       const res = await secureFetch('/voice-sos/config', {
         method: 'POST',
-        body: JSON.stringify({
-          user_id: userId,
-          enabled: config.enabled,
-          safe_word: safeWord || currentNorm || 'unchanged',
-          cooldown_seconds: config.cooldown_seconds || 60,
-          contacts: contacts.map(c => ({ name: c.name, phone: c.phone, email: c.email || '', priority: c.priority || 1 }))
-        })
+        body: JSON.stringify(payload)
       })
-      
+
       if (res.ok) {
         setSafeWord('')
-        setSaveMsg('✓ Configuration saved! Safe word locked with your PIN.')
+        setConfig(prev => ({ ...prev, enabled: willEnable }))
+        setSaveMsg(willEnable
+          ? '✓ Saved & enabled — Voice SOS is now active.'
+          : '✓ Configuration saved.')
         await fetchConfig()
       } else {
-        setSaveMsg('Failed to save configuration')
+        const err = await res.json().catch(() => null)
+        setSaveMsg(err?.detail ? `Failed: ${err.detail}` : 'Failed to save configuration')
       }
     } catch (error) {
       console.error('Error saving config:', error)
@@ -1044,6 +1067,44 @@ export default function VoiceSOSPage() {
     }
   }
 
+  // Analyze the current transcript through the AI pipeline (intent + risk).
+  // Decision-support only — this never sends an SOS.
+  const analyzeTranscript = async () => {
+    const text = (transcript || accumulatedText || '').trim()
+    if (!text || analyzing) return
+    setAnalyzing(true); setAiError(''); setVoiceAI(null)
+    try {
+      const res = await secureFetch('/voice-sos/analyze', {
+        method: 'POST',
+        body: JSON.stringify({ transcript: text })
+      })
+      if (!res.ok) throw new Error('Analyze failed')
+      setVoiceAI(await res.json())
+    } catch {
+      setAiError('AI analysis is unavailable right now. You can still send an SOS manually.')
+    } finally {
+      setAnalyzing(false)
+    }
+  }
+
+  // Map a failed /voice-sos/trigger response to a precise, user-facing reason.
+  // Critically, a parseable 4xx (e.g. "Voice SOS is disabled") is a valid
+  // business error and must NOT be reported as a backend/connection problem.
+  const classifyTriggerError = (status: number, detail: string): string => {
+    const d = (detail || '').trim()
+    if (status === 400 && /disabled/i.test(d)) {
+      return 'Voice SOS is currently disabled. Enable it with the mic button (or save your safe word), then try again.'
+    }
+    if (status === 400) return d || 'Voice SOS could not start due to an invalid request.'
+    if (status === 401) return 'Your session has expired. Please sign in again to send an SOS.'
+    if (status === 403) return d || 'Safe word verification failed.'
+    if (status === 404) return 'Voice SOS is not set up yet. Add a safe word in settings first.'
+    if (status === 429) return d || 'Please wait — an SOS was just sent (cooldown active).'
+    if (status === 503) return 'The safety service is temporarily unavailable. Please try again shortly.'
+    if (status >= 500) return 'The server hit an error handling your SOS. Please try again.'
+    return d || `Unexpected error (HTTP ${status}).`
+  }
+
   const triggerSOS = async () => {
     isTriggeringRef.current = true
     stopListening()
@@ -1073,12 +1134,18 @@ export default function VoiceSOSPage() {
           latitude: lat,
           longitude: lng,
           location_accuracy: 5.0,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          // Optional voice-AI metadata for authority context (no raw audio).
+          transcript: voiceAI?.transcript || undefined,
+          intent: voiceAI?.intent?.intent || undefined,
+          severity: voiceAI?.risk?.severity || undefined,
+          risk_score: voiceAI?.risk?.risk_score ?? undefined,
         })
       })
       
       if (res.ok) {
         const data = await res.json()
+        setTriggerError('')
         if (testMode) {
           setTestResult(data)
         } else {
@@ -1095,15 +1162,27 @@ export default function VoiceSOSPage() {
         }
         fetchHistory()
       } else {
-        const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
+        // A response we can read is a real business/validation error from
+        // FastAPI (disabled, cooldown, auth, not-configured) — NOT a connection
+        // fault. Classify it precisely so the UI never mislabels a valid 400.
+        const err = await res.json().catch(() => null)
+        const detail = (err && (err.detail || err.message)) || ''
+        const msg = classifyTriggerError(res.status, detail)
         if (testMode) {
-          setTestResult({ success: false, message: err.detail || 'Failed' })
+          setTestResult({ success: false, message: detail || msg })
+        } else {
+          setTriggerError(msg)
         }
       }
     } catch (error) {
+      // Only genuine network/transport failures reach here (fetch itself threw):
+      // the server was unreachable or the request never completed.
       console.error('Error triggering SOS:', error)
+      const netMsg = 'Could not reach the server. Check your connection and try again.'
       if (testMode) {
-        setTestResult({ success: false, message: 'Network error — could not reach server' })
+        setTestResult({ success: false, message: netMsg })
+      } else {
+        setTriggerError(netMsg)
       }
     } finally {
       if (testMode) {
@@ -1124,15 +1203,52 @@ export default function VoiceSOSPage() {
     }
   }
 
-  const toggleEnable = () => {
-    setConfig(prev => {
-      const next = !prev.enabled
-      if (!next) {
-        isTriggeringRef.current = false
-        stopListening()
+  const toggleEnable = async () => {
+    const next = !config.enabled
+
+    // Voice SOS cannot be ARMED without a safe word on file — guide the user to
+    // set one instead of silently enabling something that could never trigger.
+    if (next && !config.has_safe_word) {
+      setSaveMsg('Set and save a safe word first to enable Voice SOS.')
+      return
+    }
+
+    // Optimistic local flip for a responsive mic button; reconciled with the
+    // server response below.
+    setConfig(prev => ({ ...prev, enabled: next }))
+    if (!next) {
+      isTriggeringRef.current = false
+      stopListening()
+    }
+
+    // Test mode toggling is purely local — nothing to persist.
+    if (testMode) return
+
+    try {
+      // Persist the enable/disable to the user's own config. safe_word and
+      // contacts are intentionally omitted so the backend PRESERVES the stored
+      // PBKDF2 hash+salt and existing trusted contacts (a toggle only flips
+      // `enabled`, never clobbers secrets). Ownership stays token-derived.
+      const res = await secureFetch('/voice-sos/config', {
+        method: 'POST',
+        body: JSON.stringify({
+          user_id: userId,
+          enabled: next,
+          cooldown_seconds: config.cooldown_seconds || 60
+        })
+      })
+      if (!res.ok) {
+        // Roll back the optimistic flip and explain what happened.
+        const err = await res.json().catch(() => null)
+        setConfig(prev => ({ ...prev, enabled: !next }))
+        setSaveMsg(err?.detail ? `Could not update: ${err.detail}` : 'Could not update Voice SOS — please try again.')
+      } else {
+        await fetchConfig()
       }
-      return { ...prev, enabled: next }
-    })
+    } catch {
+      setConfig(prev => ({ ...prev, enabled: !next }))
+      setSaveMsg('Network error — could not reach the server to update Voice SOS.')
+    }
   }
 
   const handleTestMode = () => {
@@ -1192,6 +1308,31 @@ export default function VoiceSOSPage() {
             </h3>
           </div>
 
+          {triggerError && (
+            <div style={{ marginTop: 12, background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', padding: '10px 12px', borderRadius: 10, fontSize: '0.8rem', textAlign: 'left' }}>
+              <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <AlertTriangle size={15} style={{ flexShrink: 0 }} /> SOS not sent
+              </div>
+              <div style={{ marginTop: 4 }}>{triggerError}</div>
+              <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {/disabled/i.test(triggerError) && !config.enabled && (
+                  <button
+                    onClick={() => { setTriggerError(''); toggleEnable() }}
+                    style={{ padding: '5px 12px', borderRadius: 8, border: 'none', background: colors.primary, color: 'white', fontSize: '0.72rem', fontWeight: 700, cursor: 'pointer' }}
+                  >
+                    Enable Voice SOS
+                  </button>
+                )}
+                <button
+                  onClick={() => setTriggerError('')}
+                  style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #fecaca', background: 'white', color: '#b91c1c', fontSize: '0.72rem', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+
           <div style={{display: 'flex', justifyContent: 'center', gap: 10, margin: '12px 0'}}>
             <button
               onClick={() => setWhisperMode(!whisperMode)}
@@ -1220,6 +1361,99 @@ export default function VoiceSOSPage() {
               </div>
             ) : (
               <span style={{opacity: 0.5}}>(Speak your safe word slowly or naturally — speech transcript will appear here)</span>
+            )}
+          </div>
+
+          {/* ── Voice AI pipeline (transcript → intent → risk). Decision-support only. ── */}
+          <div style={{ marginTop: 14, background: '#faf5f9', border: '1px solid #f0d9e6', borderRadius: 12, padding: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ fontWeight: 700, color: colors.dark, fontSize: '0.85rem' }}>AI Analysis (optional)</div>
+              <button
+                onClick={analyzeTranscript}
+                disabled={analyzing || !(transcript || accumulatedText).trim()}
+                style={{
+                  padding: '6px 12px', borderRadius: 8, border: 'none',
+                  background: analyzing || !(transcript || accumulatedText).trim() ? 'rgba(190,24,93,0.3)' : 'linear-gradient(135deg,#be185d,#9d174d)',
+                  color: 'white', fontSize: '0.75rem', fontWeight: 700,
+                  cursor: analyzing || !(transcript || accumulatedText).trim() ? 'not-allowed' : 'pointer'
+                }}
+              >
+                {analyzing ? 'Analyzing…' : 'Analyze what I said'}
+              </button>
+            </div>
+
+            {/* Pipeline status */}
+            <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap', fontSize: '0.68rem' }}>
+              {[
+                ['Listening', isListening],
+                ['Transcript', !!(transcript || accumulatedText).trim()],
+                ['Analyzing', analyzing],
+                ['Ready', !!voiceAI],
+              ].map(([label, active], i) => (
+                <span key={i} style={{
+                  padding: '3px 9px', borderRadius: 50, fontWeight: 600,
+                  background: active ? 'rgba(190,24,93,0.1)' : '#eee',
+                  color: active ? colors.primary : '#999'
+                }}>{active ? '●' : '○'} {label as string}</span>
+              ))}
+            </div>
+
+            {aiError && (
+              <div style={{ marginTop: 10, background: '#fee2e2', color: '#b91c1c', padding: '8px 10px', borderRadius: 8, fontSize: '0.75rem' }}>
+                {aiError}
+              </div>
+            )}
+
+            {voiceAI && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: '0.68rem', color: colors.muted, marginBottom: 6 }}>
+                  Transcript analysed (AI, not a decision):
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8 }}>
+                  <div style={{ background: 'white', borderRadius: 8, padding: 8, border: '1px solid #f0d9e6' }}>
+                    <div style={{ fontSize: '0.62rem', color: colors.muted, textTransform: 'uppercase' }}>Intent</div>
+                    <div style={{ fontWeight: 800, color: colors.primary, fontSize: '0.85rem' }}>{voiceAI.intent?.intent}</div>
+                    <div style={{ fontSize: '0.62rem', color: colors.muted }}>conf {Math.round((voiceAI.intent?.confidence || 0) * 100)}%</div>
+                  </div>
+                  <div style={{ background: 'white', borderRadius: 8, padding: 8, border: '1px solid #f0d9e6' }}>
+                    <div style={{ fontSize: '0.62rem', color: colors.muted, textTransform: 'uppercase' }}>Risk</div>
+                    {voiceAI.risk_available ? (
+                      <>
+                        <div style={{ fontWeight: 800, color: colors.primary, fontSize: '0.85rem' }}>{voiceAI.risk?.severity}</div>
+                        <div style={{ fontSize: '0.62rem', color: colors.muted }}>score {voiceAI.risk?.risk_score}/100 · {voiceAI.risk?.model_state || 'DEMO'}</div>
+                      </>
+                    ) : (
+                      <div style={{ fontWeight: 700, color: '#b91c1c', fontSize: '0.72rem' }}>Unavailable</div>
+                    )}
+                  </div>
+                </div>
+
+                {Array.isArray(voiceAI.risk?.indicators) && voiceAI.risk.indicators.length > 0 && (
+                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 8 }}>
+                    {voiceAI.risk.indicators.map((ind: string, j: number) => (
+                      <span key={j} style={{ fontSize: '0.62rem', background: 'rgba(190,24,93,0.08)', color: colors.primary, padding: '2px 7px', borderRadius: 50 }}>{ind}</span>
+                    ))}
+                  </div>
+                )}
+
+                {voiceAI.needs_confirmation && (
+                  <div style={{ marginTop: 8, fontSize: '0.68rem', color: '#a16207', background: '#fef9c3', padding: '6px 9px', borderRadius: 8 }}>
+                    ⚠ Uncertain — please confirm before sending. A human authority reviews the final case.
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button onClick={triggerSOS} style={{ flex: 1, padding: '9px', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg,#dc2626,#991b1b)', color: 'white', fontWeight: 800, fontSize: '0.8rem', cursor: 'pointer' }}>
+                    Send SOS
+                  </button>
+                  <button onClick={() => { setVoiceAI(null); setAiError('') }} style={{ flex: 1, padding: '9px', borderRadius: 8, border: '1px solid #e2d6e0', background: 'white', color: colors.muted, fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer' }}>
+                    Cancel
+                  </button>
+                </div>
+                <div style={{ marginTop: 8, fontSize: '0.6rem', color: colors.muted, lineHeight: 1.5 }}>
+                  Speech-to-text and AI analysis can be inaccurate. This does not replace your safe-word workflow.
+                </div>
+              </div>
             )}
           </div>
         </div>

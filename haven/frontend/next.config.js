@@ -1,3 +1,6 @@
+const path = require('path')
+const os = require('os')
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
@@ -25,10 +28,17 @@ const nextConfig = {
     ];
   },
   webpack: (config, { dev }) => {
-    // Disable memory caching in development to fix RangeError Array Buffer limit
+    // Dev build cache hardening.
+    // The project lives inside a OneDrive-synced folder. If webpack's filesystem
+    // cache is written under the synced tree (.next/cache or node_modules/.cache),
+    // OneDrive syncs those artifacts mid-write and corrupts them — which serves
+    // broken/empty JS chunks and blanks pages across the whole app. We keep the
+    // filesystem cache (memory cache previously hit a RangeError on large buffers)
+    // but relocate it OUTSIDE OneDrive, to the OS temp dir, so sync can't touch it.
     if (dev) {
       config.cache = {
         type: 'filesystem',
+        cacheDirectory: path.join(os.tmpdir(), 'haven-next-cache'),
         buildDependencies: {
           config: [__filename],
         },

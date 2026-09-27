@@ -4,12 +4,14 @@ import { Search, Heart, Star, Clock, ChefHat, ShoppingBag, Eye, X, BookOpen, Sha
 
 export default function QuickEscape({ children }: { children: React.ReactNode }) {
   const [isCamouflaged, setIsCamouflaged] = useState(false)
-  const [disguiseTheme, setDisguiseTheme] = useState<'recipe' | 'shopping'>('recipe')
   const [typedBuffer, setTypedBuffer] = useState('')
   const [checkedIngredients, setCheckedIngredients] = useState<Record<number, boolean>>({})
-  const [showExitHint, setShowExitHint] = useState(false)
-  
+
   const lastEscTimeRef = useRef<number>(0)
+  const prevTitleRef = useRef<string | null>(null)
+  // Private restore code. Intentionally NOT rendered anywhere in the disguise so
+  // a shoulder-surfer can never read it off the screen; the user learns their
+  // return gesture during setup, not from the camouflage page itself.
   const SECRET_PIN = '1810'
 
   // Double-tap Escape key or type secret PIN '1810' to toggle
@@ -71,6 +73,26 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
       }
     }
   }, [])
+
+  // Discreet-state side effects: mask the browser tab title and give a subtle,
+  // silent tactile confirmation when the disguise engages. This keeps the real
+  // app name out of the tab / recent-apps preview and confirms activation
+  // without any sound or on-screen SOS text. Restores the title on exit.
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    if (isCamouflaged) {
+      if (prevTitleRef.current === null) prevTitleRef.current = document.title
+      document.title = 'Creamy Tuscan Garlic Chicken Pasta - TasteCraft'
+      try {
+        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+          navigator.vibrate(20)
+        }
+      } catch { /* Vibration API unavailable (e.g. iOS) — ignore */ }
+    } else if (prevTitleRef.current !== null) {
+      document.title = prevTitleRef.current
+      prevTitleRef.current = null
+    }
+  }, [isCamouflaged])
 
   const toggleIngredient = (index: number) => {
     setCheckedIngredients(prev => ({ ...prev, [index]: !prev[index] }))
@@ -159,10 +181,12 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
                     }}
                   />
                 </div>
-                {/* Secret Unlock Logo Icon */}
+                {/* Restore control disguised as a recipe "save to favorites"
+                    heart. The tooltip stays in-theme so it never hints at HAVEN. */}
                 <button
                   onClick={() => setIsCamouflaged(false)}
-                  title="Secret Restore"
+                  title="Save to favorites"
+                  aria-label="Save to favorites"
                   style={{
                     background: 'none',
                     border: 'none',
@@ -303,20 +327,18 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
               </ol>
             </div>
 
-            {/* Secret Footer (Tap 3 times or type 1810 to return) */}
+            {/* Neutral publisher footer. The restore affordance below is left
+                unlabeled on purpose — no exit method or code is ever printed. */}
             <footer style={{ marginTop: 40, paddingTop: 20, borderTop: '1px solid #e5e7eb', textAlign: 'center', fontSize: '0.75rem', color: '#9ca3af' }}>
               <p>
                 © 2026 TasteCraft Publishing Group. All rights reserved. •{' '}
                 <span
                   onClick={() => setIsCamouflaged(false)}
                   style={{ cursor: 'pointer', textDecoration: 'underline' }}
-                  title="Click to restore HAVEN"
+                  title="Privacy Policy"
                 >
-                  Privacy Policy & Nutrition Disclaimer
+                  Privacy Policy &amp; Nutrition Disclaimer
                 </span>
-              </p>
-              <p style={{ marginTop: 4, fontSize: '0.7rem' }}>
-                Tip: Enter PIN <strong>1810</strong> or double-tap <strong>ESC</strong> to exit camouflage.
               </p>
             </footer>
           </main>

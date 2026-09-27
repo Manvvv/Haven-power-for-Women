@@ -1,0 +1,2 @@
+# Trained model artifacts land here (sklearn_risk.joblib). Git-ignored except this file.
+# Generate with:  python ml/train_baseline.py

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next'
 import { ClerkProvider } from '@clerk/nextjs'
 import { LanguageProvider } from '@/components/LanguageContext'
 import QuickEscape from '@/components/QuickEscape'
+import OfflineBanner from '@/components/OfflineBanner'
 import './globals.css'
 
 export const viewport: Viewport = {
@@ -27,6 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <html lang="en">
         <body>
           <LanguageProvider>
+            <OfflineBanner />
             <QuickEscape>
               {children}
             </QuickEscape>

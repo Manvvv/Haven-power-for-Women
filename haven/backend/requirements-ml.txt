@@ -1,0 +1,19 @@
+# Optional heavy ML dependencies for the AI Risk Classifier (Parts 6-8).
+#
+# The core backend (requirements.txt) runs WITHOUT these: the RiskEngine falls
+# back to the pure-stdlib rule-based DEMO classifier. Install these only to
+# enable the trained tiers:
+#
+#   sklearn tier      -> scikit-learn + joblib  (train_baseline.py)
+#   DistilBERT tier   -> torch + transformers + datasets + accelerate (train_distilbert.py)
+#
+# Install:  pip install -r requirements-ml.txt
+
+scikit-learn>=1.3.0
+joblib>=1.3.0
+
+# --- DistilBERT tier (large; ~pulls torch). Uncomment to enable. ---
+# torch>=2.2.0
+# transformers>=4.44.0
+# datasets>=2.20.0
+# accelerate>=0.33.0

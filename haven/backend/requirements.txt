@@ -14,4 +14,9 @@ huggingface_hub
 pyjwt>=2.10.0
 cryptography>=43.0.0
 
+# Optional: distributed rate limiting & durable cooldowns backend.
+# Not required for local development (the limiter falls back to in-memory).
+# Install to enable the shared Redis backend (see REDIS_* in .env.example).
+redis>=5.0.0
+
 

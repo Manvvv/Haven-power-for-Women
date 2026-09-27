@@ -1,5 +1,7 @@
 'use client'
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { useOfflineStatus } from '@/hooks/useOfflineStatus'
+import { saveSecure, loadSecure, removeSecure } from '@/lib/secureLocal'
 
 interface PanicButtonProps {
   size?: 'small' | 'large'
@@ -22,13 +24,42 @@ export default function PanicButton({ size = 'large' }: PanicButtonProps) {
   const progressRef = useRef(0)
   const HOLD_MS = 3000
 
+  // Offline-first: record the panic SOS to the backend, queuing it in IndexedDB
+  // first so it is never lost and is retried automatically when back online.
+  const { submitSOS, isOnline } = useOfflineStatus()
+
+  // Load the trusted contact from ENCRYPTED at-rest storage. One-time migration:
+  // if a legacy plaintext localStorage contact exists, move it into the encrypted
+  // store and then delete the plaintext copy so it never lingers readable.
+  const STORE_CONTACT = 'haven_panic_contact'
+  const STORE_NAME = 'haven_panic_name'
   useEffect(() => {
-    const num = localStorage.getItem('haven_panic_contact') || ''
-    const name = localStorage.getItem('haven_panic_name') || ''
-    setSavedContact(num)
-    setSavedName(name)
-    setContactNumber(num)
-    setContactName(name)
+    let cancelled = false
+    ;(async () => {
+      try {
+        const legacyNum = localStorage.getItem(STORE_CONTACT)
+        const legacyName = localStorage.getItem(STORE_NAME)
+        if (legacyNum !== null || legacyName !== null) {
+          if (legacyNum) await saveSecure(STORE_CONTACT, legacyNum)
+          if (legacyName) await saveSecure(STORE_NAME, legacyName)
+          // Purge plaintext copies regardless, so nothing readable remains.
+          localStorage.removeItem(STORE_CONTACT)
+          localStorage.removeItem(STORE_NAME)
+        }
+        const num = (await loadSecure(STORE_CONTACT)) || ''
+        const name = (await loadSecure(STORE_NAME)) || ''
+        if (cancelled) return
+        setSavedContact(num)
+        setSavedName(name)
+        setContactNumber(num)
+        setContactName(name)
+      } catch {
+        /* storage unavailable — panic button still works without a saved contact */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const getGPS = useCallback((): Promise<{ lat: number; lng: number } | null> => {
@@ -54,6 +85,14 @@ export default function PanicButton({ size = 'large' }: PanicButtonProps) {
     setProgress(0)
     progressRef.current = 0
 
+    // Subtle, silent tactile confirmation that the SOS fired — no extra sound or
+    // alarm. No-op where the Vibration API is unavailable (e.g. iOS Safari).
+    try {
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        navigator.vibrate([40, 60, 40])
+      }
+    } catch { /* vibration unavailable — ignore */ }
+
     const coords = await getGPS()
 
     const mapsLink = coords
@@ -63,6 +102,27 @@ export default function PanicButton({ size = 'large' }: PanicButtonProps) {
     const msg = coords
       ? `🚨 EMERGENCY ALERT from Haven 🚨\n\nI am in danger and need immediate help!\n\n📍 My location: ${mapsLink}\n\nPlease call me or contact authorities immediately.\n\nSent via Haven Safety App`
       : `🚨 EMERGENCY ALERT from Haven 🚨\n\nI am in danger and need immediate help!\n\n⚠️ Could not get GPS location.\n\nPlease call me or contact authorities immediately.\n\nSent via Haven Safety App`
+
+    // Record the panic SOS to the backend through the offline-first queue.
+    // If offline, it is stored locally and delivered automatically on reconnect.
+    try {
+      await submitSOS({
+        type: 'panic',
+        endpoint: '/save-extracted-data',
+        message: 'Panic button activated — user reported immediate danger.',
+        latitude: coords?.lat ?? null,
+        longitude: coords?.lng ?? null,
+        payload: {
+          decoded_text: 'PANIC BUTTON ACTIVATED — user reported being in immediate danger.',
+          severity: 'critical',
+          immediate_danger: true,
+          trigger_type: 'panic',
+          location: coords ? `${coords.lat},${coords.lng}` : '',
+          needs: ['immediate_assistance'],
+          summary: 'Panic button held for 3s. Treat as high-priority.',
+        },
+      })
+    } catch { /* queued locally even if this throws */ }
 
     // Copy location to clipboard
     if (coords) {
@@ -119,9 +179,17 @@ document.body.removeChild(a)
     progressRef.current = 0
   }
 
-  function saveContact() {
-    localStorage.setItem('haven_panic_contact', contactNumber)
-    localStorage.setItem('haven_panic_name', contactName)
+  async function saveContact() {
+    // Persist ENCRYPTED at rest (AES-256-GCM, non-extractable device key). If a
+    // field is cleared, remove it rather than storing an empty encrypted blob.
+    try {
+      if (contactNumber) await saveSecure(STORE_CONTACT, contactNumber)
+      else await removeSecure(STORE_CONTACT)
+      if (contactName) await saveSecure(STORE_NAME, contactName)
+      else await removeSecure(STORE_NAME)
+    } catch {
+      /* ignore storage errors — the in-memory value is still usable this session */
+    }
     setSavedContact(contactNumber)
     setSavedName(contactName)
     setShowSetup(false)
@@ -282,6 +350,14 @@ document.body.removeChild(a)
             <p style={{ fontSize: '0.85rem', color: '#8b6b7d', lineHeight: 1.6, marginBottom: 8 }}>
               WhatsApp opened with your emergency message.
               {location && <><br /><strong style={{ color: '#15803d' }}>📍 Location copied to clipboard!</strong></>}
+              <br />
+              {isOnline ? (
+                <span style={{ color: '#15803d' }}>Your alert is being delivered to Haven authorities.</span>
+              ) : (
+                <span style={{ color: '#c2410c' }}>
+                  You are offline — your alert is saved and will be sent to authorities automatically when you reconnect.
+                </span>
+              )}
             </p>
             {location && (
               <div style={{ background: '#f0fdf4', borderRadius: 10, padding: 10, marginBottom: 16, fontSize: '0.75rem', color: '#15803d' }}>
