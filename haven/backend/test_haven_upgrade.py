@@ -1132,6 +1132,179 @@ class TestP1SearchProfilesSecurity:
         assert r.status_code in (400, 503)
 
 
+class TestP1SearchConsolidation:
+    """Audit #11: EVERY production profile/culprit matching path must converge on
+    the single canonical hardened matcher (profile_search.run_profile_search).
+
+    The two formerly-divergent endpoints are re-pointed here:
+      * POST /search/profiles  (was search_service.search_profiles: raw fields +
+        raw score, no classification / level / verification / allowlist)
+      * GET  /search/exact     (was a bespoke regex find() that fabricated a flat
+        1.0/0.9 score and serialized raw docs, leaking reporter identity)
+
+    Both now MUST return the canonical contract (query_type, search_type,
+    human_verification_required, disclaimer), enforce the SAFE_PUBLIC_MATCH_FIELDS
+    allowlist, keep authority-only RBAC, and degrade honestly (503 on backend
+    failure — never a misleading empty result). These tests prove convergence at
+    the HTTP boundary; validate_search_consolidation.py proves it statically.
+    """
+
+    _NAME = "Nirmal Nehra"
+
+    @staticmethod
+    def _culprits_coll():
+        try:
+            from services.db import culprits
+            return culprits()
+        except Exception:
+            return None
+
+    @classmethod
+    def _seed(cls):
+        """Seed a profile carrying sensitive internal fields. Returns True if seeded."""
+        coll = cls._culprits_coll()
+        if coll is None:
+            return False
+        try:
+            coll.update_one(
+                {"culprit_id": "P1-CONSOL-001"},
+                {"$set": {
+                    "culprit_id": "P1-CONSOL-001", "name": cls._NAME,
+                    "physical_description": "medium build, short black hair",
+                    "behavioral_traits": "evasive", "location": "Sector 9",
+                    # sensitive internal metadata that must NEVER be returned:
+                    "reporter_id": "USER-SECRET-999", "reporter_role": "user",
+                    "description_embedding": [0.0] * 768,
+                }},
+                upsert=True,
+            )
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _assert_canonical(body):
+        """Every canonical profile-match response carries these keys."""
+        for key in ("matches", "results", "query", "total", "query_type",
+                    "search_type", "search_mode", "degraded",
+                    "human_verification_required", "disclaimer"):
+            assert key in body, f"missing canonical key {key!r}"
+        assert body["human_verification_required"] is True
+        assert "investigative references, not confirmations of guilt" in body["disclaimer"]
+        assert isinstance(body["degraded"], bool)
+        # back-compat: legacy `matches` and canonical `results` are the same set.
+        assert body["matches"] == body["results"]
+
+    @staticmethod
+    def _assert_no_leak(matches):
+        from services.profile_search import SAFE_PUBLIC_MATCH_FIELDS
+        forbidden = {"_id", "reporter_id", "reporter_role", "description_embedding",
+                     "embedding", "raw_embedding", "password", "token", "secret"}
+        for m in matches:
+            leaked = forbidden & set(m.keys())
+            assert not leaked, f"internal field(s) leaked: {sorted(leaked)}"
+            extra = set(m.keys()) - set(SAFE_PUBLIC_MATCH_FIELDS)
+            assert not extra, f"non-allowlisted field(s) returned: {sorted(extra)}"
+
+    # ── /search/exact — RBAC ──
+    def test_exact_unauthenticated_rejected(self):
+        r = client.get("/search/exact", params={"name": "Nirmal"})
+        assert r.status_code == 401
+
+    def test_exact_user_forbidden(self, user_token):
+        r = client.get("/search/exact", params={"name": "Nirmal"},
+                       headers={"Authorization": f"Bearer {user_token}"})
+        assert r.status_code == 403
+
+    def test_exact_authority_canonical_contract(self, authority_token):
+        r = client.get("/search/exact", params={"name": self._NAME},
+                       headers={"Authorization": f"Bearer {authority_token}"})
+        assert r.status_code in (200, 503)  # never 401/403
+        if r.status_code == 200:
+            body = r.json()
+            self._assert_canonical(body)
+            # NAME mode -> the canonical classifier reports a name query.
+            assert body["query_type"] == "name"
+
+    # ── /search/exact — deterministic name tiers reach the canonical matcher ──
+    def test_exact_name_variants_match(self, authority_token):
+        """Exact, reordered, substring and transliterated/folded names all route
+        through run_profile_search in NAME mode and can match — the bug this audit
+        closes was a plain name being filtered out by a vector threshold."""
+        if not self._seed():
+            pytest.skip("DB unavailable — cannot assert name-match tiers")
+        for variant in ("Nirmal Nehra", "nehra nirmal", "nirmal", "Nirmal Nehraa"):
+            r = client.get("/search/exact", params={"name": variant},
+                           headers={"Authorization": f"Bearer {authority_token}"})
+            if r.status_code != 200:
+                pytest.skip("DB unavailable mid-run")
+            body = r.json()
+            self._assert_canonical(body)
+            self._assert_no_leak(body["matches"])
+            assert body["query_type"] == "name"
+            assert any(m.get("name") == self._NAME for m in body["matches"]), \
+                f"expected {self._NAME!r} to match variant {variant!r}"
+
+    def test_exact_no_match_is_empty_not_error(self, authority_token):
+        r = client.get("/search/exact",
+                       params={"name": "Zzqx Nonexistent Person 4471"},
+                       headers={"Authorization": f"Bearer {authority_token}"})
+        assert r.status_code in (200, 503)
+        if r.status_code == 200:
+            body = r.json()
+            self._assert_canonical(body)
+            assert body["matches"] == []  # honest empty, not fabricated
+
+    def test_exact_forbidden_fields_never_returned(self, authority_token):
+        if not self._seed():
+            pytest.skip("DB unavailable")
+        r = client.get("/search/exact", params={"name": self._NAME},
+                       headers={"Authorization": f"Bearer {authority_token}"})
+        if r.status_code != 200:
+            pytest.skip("DB unavailable")
+        self._assert_no_leak(r.json().get("matches", []))
+
+    # ── /search/profiles — now the SAME canonical matcher ──
+    def test_profiles_authority_canonical_contract(self, authority_token):
+        r = client.post("/search/profiles",
+                        json={"description": "medium build evasive individual",
+                              "mode": "semantic", "limit": 5},
+                        headers={"Authorization": f"Bearer {authority_token}"})
+        assert r.status_code in (200, 503)
+        if r.status_code == 200:
+            body = r.json()
+            self._assert_canonical(body)
+            # description text -> classifier reports description (or mixed).
+            assert body["query_type"] in ("description", "mixed", "name")
+            self._assert_no_leak(body["matches"])
+
+    def test_profiles_name_query_classified_as_name(self, authority_token):
+        r = client.post("/search/profiles", json={"query": self._NAME, "mode": "keyword"},
+                        headers={"Authorization": f"Bearer {authority_token}"})
+        if r.status_code != 200:
+            pytest.skip("DB unavailable")
+        assert r.json()["query_type"] in ("name", "mixed")
+
+    def test_profiles_forbidden_fields_never_returned(self, authority_token):
+        if not self._seed():
+            pytest.skip("DB unavailable")
+        r = client.post("/search/profiles", json={"query": self._NAME, "mode": "keyword"},
+                        headers={"Authorization": f"Bearer {authority_token}"})
+        if r.status_code != 200:
+            pytest.skip("DB unavailable")
+        self._assert_no_leak(r.json().get("matches", []))
+
+    def test_profiles_degraded_flag_is_honest(self, authority_token):
+        """Whatever the embedding backend state, `degraded` is a real boolean and
+        the response never fabricates a semantic claim it cannot back."""
+        r = client.post("/search/profiles",
+                        json={"description": "someone tall and aggressive", "mode": "hybrid"},
+                        headers={"Authorization": f"Bearer {authority_token}"})
+        if r.status_code != 200:
+            pytest.skip("DB unavailable")
+        assert isinstance(r.json()["degraded"], bool)
+
+
 class TestSemanticSearchAndIntelligence:
     """Tests for keyword / semantic / hybrid search over Case & Profile Intelligence."""
 
@@ -1383,6 +1556,31 @@ class TestLegalRAG:
         assert out["answer"] != rag.LLM_UNAVAILABLE_MESSAGE
         assert len(out["sources"]) == 1
         assert out["sources"][0]["section"] == "Section 12"
+
+    def test_relevance_floor_accepts_canonical_source_without_rerank_fields(self):
+        """Regression guard for the #12 relevance floor: a canonical/legacy source
+        that carries a genuine semantic `score` (already cleared retrieve()'s
+        MIN_SCORE gate) but NONE of the private rerank-derived fields
+        (_blended/_kw_ratio/_precise_hits/_cat_match) MUST still qualify as adequate
+        evidence. Without this, an adequate source is mis-classified as no_context —
+        the exact regression the floor's first cut introduced. This pins the
+        contract so a future rerank refactor can't silently reintroduce it."""
+        from services import legal_triage as t
+        legacy = {"title": "PWDVA 2005", "section": "Section 12",
+                  "text": "Application to Magistrate.", "score": 0.82, "document_id": "D1"}
+        norm = t.normalize_passage(legacy)
+        assert norm["semantic_score"] == 0.82
+        assert norm["blended"] is None            # not reranked -> derived field absent
+        assert t.passage_qualifies(legacy) is True
+        assert t.assess_relevance([legacy])["passes"] is True
+        # The floor is NOT weakened: a semantic score below the retrieval floor,
+        # with no other support, is still rejected.
+        assert t.passage_qualifies({"score": 0.40}) is False
+        assert t.assess_relevance([{"score": 0.40}])["passes"] is False
+        # And a genuinely weak keyword-only passage is still rejected.
+        assert t.passage_qualifies(
+            {"score": None, "_blended": 0.15, "_cat_match": False,
+             "_precise_hits": 1, "_kw_ratio": 0.1}) is False
 
     def test_retrieval_falls_back_when_embeddings_unavailable(self, monkeypatch):
         """Embedding service DEMO/unavailable -> keyword_fallback retrieval mode."""

@@ -1,0 +1,32 @@
+{"id": "sos01", "text": "he has a knife and he is going to kill me", "severity": "CRITICAL", "note": "lethal weapon + intent"}
+{"id": "sos02", "text": "someone broke into my house and is attacking me right now", "severity": "CRITICAL", "note": "active attack, intrusion"}
+{"id": "sos03", "text": "he has a gun pointed at me please help", "severity": "CRITICAL", "note": "firearm threat"}
+{"id": "sos04", "text": "they are forcing me into a car, i'm being kidnapped", "severity": "CRITICAL", "note": "abduction in progress"}
+{"id": "sos05", "text": "he is strangling me i can't breathe", "severity": "CRITICAL", "note": "life-threatening assault"}
+{"id": "sos06", "text": "mujhe maar dega, uske paas chaku hai", "severity": "CRITICAL", "note": "Hinglish: he'll kill me, he has a knife"}
+{"id": "sos07", "text": "bachao koi mujhe utha kar le ja raha hai", "severity": "CRITICAL", "note": "Hinglish: save me, being abducted"}
+{"id": "sos08", "text": "he threw acid on me and i'm burning", "severity": "CRITICAL", "note": "acid attack"}
+{"id": "sos09", "text": "my ex keeps following me and won't leave me alone", "severity": "HIGH", "note": "stalking, escalating"}
+{"id": "sos10", "text": "he locked me in the room and won't let me out", "severity": "HIGH", "note": "confinement"}
+{"id": "sos11", "text": "he hit me tonight and i'm scared he will do it again", "severity": "HIGH", "note": "physical assault + fear"}
+{"id": "sos12", "text": "a man has been stalking me outside my house for days", "severity": "HIGH", "note": "persistent stalking"}
+{"id": "sos13", "text": "he threatened to hurt me if i try to leave him", "severity": "HIGH", "note": "coercive threat"}
+{"id": "sos14", "text": "koi mera peecha kar raha hai raat se", "severity": "HIGH", "note": "Hinglish: someone following me since night"}
+{"id": "sos15", "text": "usne mujhe bahut maara aaj", "severity": "HIGH", "note": "Hinglish: he beat me badly today"}
+{"id": "sos16", "text": "he grabbed my arm hard and won't let go", "severity": "HIGH", "note": "physical restraint"}
+{"id": "sos17", "text": "a stranger keeps staring at me on the bus and moved closer", "severity": "MODERATE", "note": "unsettling, not yet violent"}
+{"id": "sos18", "text": "i feel really unsafe walking home alone at night", "severity": "MODERATE", "note": "generalized fear"}
+{"id": "sos19", "text": "someone is sending me creepy messages online", "severity": "MODERATE", "note": "online harassment"}
+{"id": "sos20", "text": "there is a suspicious man loitering near my building", "severity": "MODERATE", "note": "suspicious presence"}
+{"id": "sos21", "text": "mujhe akele bahar jaane mein darr lag raha hai", "severity": "MODERATE", "note": "Hinglish: afraid to go out alone"}
+{"id": "sos22", "text": "a car has been slowly following behind me for a while", "severity": "MODERATE", "note": "possible following"}
+{"id": "sos23", "text": "my colleague keeps making inappropriate comments about me", "severity": "MODERATE", "note": "workplace harassment"}
+{"id": "sos24", "text": "i think someone might be watching my apartment", "severity": "MODERATE", "note": "suspicion, uncertain"}
+{"id": "sos25", "text": "i lost my phone somewhere at the shopping mall", "severity": "LOW", "note": "non-emergency"}
+{"id": "sos26", "text": "can you help me find the nearest police station", "severity": "LOW", "note": "info request"}
+{"id": "sos27", "text": "i want to update my emergency contact list", "severity": "LOW", "note": "app admin"}
+{"id": "sos28", "text": "just testing the sos button to see how it works", "severity": "LOW", "note": "test"}
+{"id": "sos29", "text": "i'm running a bit late to meet my friend for coffee", "severity": "LOW", "note": "benign"}
+{"id": "sos30", "text": "mera din aaj bilkul theek raha", "severity": "LOW", "note": "Hinglish: my day was fine"}
+{"id": "sos31", "text": "how do i change the password on my account", "severity": "LOW", "note": "account help"}
+{"id": "sos32", "text": "what are the visiting hours at the community center", "severity": "LOW", "note": "info request"}

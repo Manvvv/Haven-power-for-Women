@@ -1,0 +1,15 @@
+{"id": "in01", "transcript": "help me he has a knife", "recognition_confidence": 0.9, "intent": "EMERGENCY", "note": "clear threat, good recognition"}
+{"id": "in02", "transcript": "call the police someone is attacking me right now", "recognition_confidence": 0.9, "intent": "EMERGENCY", "note": "active attack"}
+{"id": "in03", "transcript": "he is going to kill me please send help", "recognition_confidence": 0.9, "intent": "EMERGENCY", "note": "lethal threat"}
+{"id": "in04", "transcript": "bachao mujhe maar rahe hain jaldi madad karo", "recognition_confidence": 0.9, "intent": "EMERGENCY", "note": "Hinglish: save me they are beating me"}
+{"id": "in05", "transcript": "i am being followed and i am terrified please help now", "recognition_confidence": 0.9, "intent": "EMERGENCY", "note": "stalking + fear + help"}
+{"id": "in06", "transcript": "someone broke into my home help me", "recognition_confidence": 0.9, "intent": "EMERGENCY", "note": "intrusion"}
+{"id": "in07", "transcript": "help me he has a knife", "recognition_confidence": 0.3, "intent": "POSSIBLE_EMERGENCY", "note": "same as in01 but LOW recognition -> capped + needs_confirmation"}
+{"id": "in08", "transcript": "call the police someone is attacking me", "recognition_confidence": 0.35, "intent": "POSSIBLE_EMERGENCY", "note": "low recognition cap"}
+{"id": "in09", "transcript": "he is going to hurt me", "recognition_confidence": 0.4, "intent": "POSSIBLE_EMERGENCY", "note": "threat but low recognition"}
+{"id": "in10", "transcript": "hey what is the weather like today", "recognition_confidence": 0.9, "intent": "NON_EMERGENCY", "note": "benign"}
+{"id": "in11", "transcript": "remind me to buy groceries later this evening", "recognition_confidence": 0.9, "intent": "NON_EMERGENCY", "note": "benign task"}
+{"id": "in12", "transcript": "can you play some relaxing music for me", "recognition_confidence": 0.9, "intent": "NON_EMERGENCY", "note": "benign"}
+{"id": "in13", "transcript": "aaj mausam kaafi accha hai na", "recognition_confidence": 0.9, "intent": "NON_EMERGENCY", "note": "Hinglish: nice weather today"}
+{"id": "in14", "transcript": "what time is my meeting scheduled tomorrow", "recognition_confidence": 0.9, "intent": "NON_EMERGENCY", "note": "benign"}
+{"id": "in15", "transcript": "please set an alarm for seven in the morning", "recognition_confidence": 0.9, "intent": "NON_EMERGENCY", "note": "benign"}

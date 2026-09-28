@@ -82,6 +82,14 @@ _IMMINENT_PHRASES = [
     "pills le li", "goliyan le li", "goliyaan le li", "zeher kha", "zaher kha", "poison pi",
     "abhi maar raha", "maar raha hai", "mujh par hamla", "jaan se maar", "bacha lo",
     "abhi marne", "abhi khatam kar", "phansi", "chhat par khada", "saans nahi",
+    # Hinglish overdose already-taken — English noun ("pills") + Hindi verb ("kha li/liya"),
+    # a very common code-switch that previously scored UNKNOWN (safety gap). Romanized
+    # goli/dawa combos too (Devanagari forms already covered above).
+    "pills kha li", "pills kha liya", "pills kha lee", "pills kha lie",
+    "goli kha li", "goliyan kha li", "goliyaan kha li", "goli kha liya", "goliyan kha liya",
+    "dawa kha li", "dawai kha li", "dawa kha liya", "neend ki goli", "neend ki goliyan",
+    "sleeping pills kha", "bahut saari pills kha", "bahut saari goli kha", "zeher pi liya",
+    "zeher kha liya", "poison kha li", "poison pi liya",
 ]
 
 # IMMINENT self-harm INTENT ("going to / about to / right now"). These are negatable
@@ -101,18 +109,33 @@ _SUICIDE_PHRASES = [
     "don't want to be here", "dont want to be here", "don't want to be here anymore",
     "don't want to live", "dont want to live", "no reason to live", "no point in living",
     "better off dead", "everyone better off without me", "end my life", "end it all",
+    "ending it all", "ending my life", "ending it tonight", "want to end my life",
     "want to end it", "take my own life", "commit suicide", "suicidal", "suicide",
     "can't stay safe", "cannot stay safe", "can't keep myself safe", "don't feel safe from myself",
+    # Eval-driven additive recall (seed set mh16/mh18/mh22): phrasing/method variants of
+    # clearly suicidal ideation that the contiguous phrases above miss. Same HIGH-tier
+    # scoping — still downgraded by _REASSURANCE / negation, never a new floor.
+    "better off without me", "be better off without me", "world better off without me",
+    "just ending it", "thinking about ending it", "thinking of ending it", "think about ending it",
+    "all my pills at once", "all these pills at once", "take all my pills at once",
+    "taking all my pills at once", "swallow all my pills", "swallow all these pills",
+    "overdose on my pills", "take a whole bottle of pills", "whole bottle of pills",
     "मरना चाहता", "मरना चाहती", "मर जाना चाहता", "मर जाना चाहती", "आत्महत्या", "खुदकुशी",
     "जीना नहीं चाहता", "जीना नहीं चाहती", "जीने का मन नहीं", "मरना है", "खत्म कर दूं",
     "marna chahta", "marna chahti", "marna hai", "mar jana chahta", "mar jaana chahta",
     "atmahatya", "aatmahatya", "khudkushi", "jeena nahi chahta", "jeena nahi chahti",
     "jeene ka mann nahi", "khatam kar dun", "khatam kar dunga", "khatam kar dungi",
     "suicide karna", "suicide kar",
+    # Eval-driven additive recall (seed set mh19): "dying is better" ideation phrasings.
+    "marna behtar", "marna hi behtar", "mar jana behtar", "mar jaana behtar", "mar jana hi behtar",
+    "मरना बेहतर", "मरना ही बेहतर", "मर जाना बेहतर",
 ]
 _SELF_HARM_PHRASES = [
     "hurt myself", "harm myself", "self harm", "self-harm", "selfharm", "cut myself",
     "cutting myself", "cut my wrist", "burn myself", "injure myself", "want to bleed",
+    # Eval-driven additive recall (seed set mh15): gerund / continuous phrasings that the
+    # base ("hurt myself") misses. Same HIGH-tier scoping and _REASSURANCE downgrade.
+    "hurting myself", "harming myself", "injuring myself", "cutting my wrist",
     "खुद को नुकसान", "खुद को चोट", "खुद को मारना", "खुद को नुक्सान",
     "khud ko hurt", "khud ko nuksan", "khud ko nuqsan", "khud ko chot", "khud ko marna",
 ]
@@ -308,7 +331,16 @@ def _fuzzy_phrase_span(msg_tokens: List[str], anchor: str,
 
 # Negations that FLIP the meaning of a self-harm/suicide phrase ("I do NOT want to
 # die"). Deliberately excludes "can't" ("can't stay safe"/"can't go on" are real risk).
-_NEGATION_CUES = {"not", "dont", "didnt", "never", "wont", "no", "nahi", "nahin", "na", "nhi"}
+# NOTE: the word tokenizer splits apostrophe-contractions ("don't" -> "don","t"), so we
+# include the leading contraction fragments (don/won/didn/doesn/...) as negation cues
+# too — otherwise a windowed check would miss "I don't want to die".
+_NEGATION_CUES = {
+    "not", "dont", "didnt", "never", "wont", "no", "nahi", "nahin", "na", "nhi",
+    "नहीं", "नही", "ना", "मत",
+    # apostrophe-split contraction fragments (meaning-flipping; "can" excluded on purpose)
+    "don", "won", "didn", "doesn", "isn", "wasn", "weren", "aren",
+    "wouldn", "shouldn", "couldn", "hadn", "hasn", "haven", "ain",
+}
 
 
 def _negated_before(msg_tokens: List[str], start: int) -> bool:
@@ -321,6 +353,67 @@ def _negated_before(msg_tokens: List[str], start: int) -> bool:
     if start <= 0:
         return False
     return any(tok in _NEGATION_CUES for tok in msg_tokens[max(0, start - 3):start])
+
+
+def _all_indices_of(msg_tokens: List[str], phrase_tokens: List[str]) -> List[int]:
+    """Every start index where phrase_tokens occurs contiguously in msg_tokens."""
+    n = len(phrase_tokens)
+    if n == 0:
+        return []
+    return [i for i in range(len(msg_tokens) - n + 1)
+            if msg_tokens[i:i + n] == phrase_tokens]
+
+
+def _contains_unnegated(text: str, phrases: List[str]) -> bool:
+    """True if ANY phrase appears in `text` in a position that is NOT immediately
+    negated (windowed, 3 tokens before the match).
+
+    This is what makes reassurance SCOPED instead of whole-message: a message like
+    "I would never hurt myself, but now I'm about to hurt myself" still detects the
+    unnegated "about to hurt myself" even though a reassurance phrase is present
+    elsewhere. Conversely "I'm not going to hurt myself" is correctly treated as
+    negated. Fail-safe: if a phrase is a substring but can't be token-aligned (odd
+    punctuation), it is counted as present (over-detection is the safe direction).
+    """
+    toks = _tokens(text)
+    for p in phrases:
+        if p not in text:
+            continue
+        ptoks = _WORD_RE.findall(p.lower())
+        if not ptoks:
+            return True
+        idxs = _all_indices_of(toks, ptoks)
+        if not idxs:
+            return True  # substring present but not token-aligned → fail safe
+        if any(not _negated_before(toks, i) for i in idxs):
+            return True
+    return False
+
+
+# Adversative / "turn" markers. Text after one of these can flip the meaning of an
+# earlier clause: "I used to want to die BUT I'm fine now" (turn -> reassurance, safe)
+# vs "I promise I'm fine BUT I want to die now" (turn -> danger, must NOT downgrade).
+_ADVERSATIVE = {"but", "however", "though", "still", "yet",
+                "lekin", "magar", "par", "phir", "fir", "pr",
+                "लेकिन", "मगर", "पर", "फिर"}
+
+
+def _danger_after_turn(text: str) -> bool:
+    """True if an UNNEGATED present-danger phrase appears AFTER the last adversative
+    marker. Used so a reassurance can only downgrade when it is the FINAL word on the
+    matter — "…but I want to kill myself now" keeps its crisis tier despite an earlier
+    reassurance."""
+    toks = _tokens(text)
+    turn_idx = -1
+    for i, tk in enumerate(toks):
+        if tk in _ADVERSATIVE:
+            turn_idx = i
+    if turn_idx < 0:
+        return False
+    tail = " ".join(toks[turn_idx + 1:])
+    return (_contains_unnegated(tail, _SUICIDE_PHRASES)
+            or _contains_unnegated(tail, _SELF_HARM_PHRASES)
+            or _contains_unnegated(tail, _IMMINENT_SELFHARM_INTENT))
 
 
 def _sem_hit(msg_tokens: List[str], anchor: str, thr: float, respect_negation: bool) -> bool:
@@ -442,12 +535,19 @@ def build_triage(message: str, language_hint: Optional[str] = None) -> MHTriage:
 
     reassured = _any(text, _REASSURANCE)
     grief = _is_first_person_grief(text)
+    # Reassurance is SCOPED: it only downgrades when it is the last word on the matter.
+    # If a present-danger cue follows an adversative ("…but I want to die now"), the
+    # reassurance no longer counts — a distant "I'm fine" can't mask a later disclosure.
+    reassured_effective = reassured and not _danger_after_turn(text)
 
     # ---- State (conservative: highest applicable wins) ----
     level = UNKNOWN
     imminent_core = _any(text, _IMMINENT_PHRASES)
-    # Self-harm INTENT is imminent only when not explicitly negated/reassured.
-    imminent_intent = _any(text, _IMMINENT_SELFHARM_INTENT) and not reassured
+    # Self-harm INTENT is imminent when the intent phrase is present and NOT immediately
+    # negated (windowed). A reassurance phrase elsewhere in the message can no longer
+    # suppress a genuine, co-present intent — fixes
+    # "I would never hurt myself, but now I'm about to hurt myself" (was capped MODERATE).
+    imminent_intent = _contains_unnegated(text, _IMMINENT_SELFHARM_INTENT)
     imminent_hit = imminent_core or imminent_intent
     active_violence = sig["violence"] or _any(text, _ACTIVE_VIOLENCE_PHRASES)
     # Voices commanding harm → treat as imminent.
@@ -457,10 +557,10 @@ def build_triage(message: str, language_hint: Optional[str] = None) -> MHTriage:
             or active_violence or command_harm:
         level = IMMINENT
         t.immediate_danger = True
-    elif (sig["suicide"] or sig["self_harm"]) and not (reassured or grief):
+    elif (sig["suicide"] or sig["self_harm"]) and not (reassured_effective or grief):
         level = HIGH
     elif _any(text, _MODERATE_PHRASES) or sig["psychosis"] or (sig["abuse"] and "threat" in text) \
-            or ((sig["suicide"] or sig["self_harm"]) and (reassured or grief)):
+            or ((sig["suicide"] or sig["self_harm"]) and (reassured_effective or grief)):
         level = MODERATE
     elif _any(text, _LOW_PHRASES) or sig["abuse"]:
         level = LOW
@@ -482,7 +582,7 @@ def build_triage(message: str, language_hint: Optional[str] = None) -> MHTriage:
     # failure here can never break the deterministic safety floor (spec: "if semantic
     # detection fails, deterministic triage must still work").
     try:
-        sem = semantic_escalation(text, reassured=reassured, grief=grief)
+        sem = semantic_escalation(text, reassured=reassured_effective, grief=grief)
     except Exception:
         sem = UNKNOWN
     if _RANK[sem] > _RANK[level]:

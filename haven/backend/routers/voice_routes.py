@@ -25,6 +25,12 @@ from services.db import (
 )
 from rate_limiter import rate_limit_dependency, cooldown_remaining, cooldown_set
 from services.audit_service import log_audit
+from services.contact_validation import (
+    MAX_TRUSTED_CONTACTS,
+    normalize_phone,
+    valid_phone,
+    valid_email,
+)
 
 router = APIRouter(prefix="", tags=["Voice SOS"])
 
@@ -524,3 +530,109 @@ def get_trusted_contacts(
     ).sort("priority", 1))
 
     return {"contacts": [serialize_doc(c) for c in contacts]}
+
+
+# ── Per-contact add / delete ─────────────────────────────────────────────────
+# The legacy full-replace POST /trusted-contacts (above) is kept for the initial
+# Voice-SOS setup flow, but the day-to-day contacts UI uses these single-item
+# endpoints. Operating on ONE contact atomically server-side removes the
+# full-list-replace fragility (a stale client could otherwise resurrect a deleted
+# contact or wipe one it never loaded) that made add/delete unreliable.
+# Validation rules live in services.contact_validation so they can be unit-tested
+# without importing FastAPI/PyMongo.
+
+
+@router.post("/trusted-contacts/add")
+def add_trusted_contact(
+    body: dict = Body(...),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """Add ONE trusted contact for the authenticated user.
+
+    Identity comes ONLY from the verified token (any body user_id/owner_id is
+    ignored). Validates name + phone server-side, dedups by normalized phone,
+    enforces the max-contacts cap, and returns the AUTHORITATIVE updated list so
+    the client never has to reconstruct it. Atomic single insert — a stale client
+    cannot clobber contacts it did not know about.
+    """
+    if trusted_contacts_collection is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    user_id = current_user.user_id
+
+    name = str(body.get("name", "")).strip()[:100]
+    phone = str(body.get("phone", "")).strip()[:30]
+    email = str(body.get("email", "")).strip()[:120]
+    if not name:
+        raise HTTPException(status_code=400, detail="Contact name is required")
+    if not valid_phone(phone):
+        raise HTTPException(status_code=400, detail="A valid phone number is required")
+    if not valid_email(email):
+        raise HTTPException(status_code=400, detail="Email address is not valid")
+
+    existing = list(trusted_contacts_collection.find({"user_id": user_id}, {"_id": 0}))
+    if len(existing) >= MAX_TRUSTED_CONTACTS:
+        raise HTTPException(status_code=400,
+                            detail=f"Maximum {MAX_TRUSTED_CONTACTS} contacts allowed")
+    # Duplicate handling: same normalized phone for the same user is rejected
+    # (409) rather than silently creating a second copy.
+    norm = normalize_phone(phone)
+    if any(normalize_phone(c.get("phone", "")) == norm for c in existing):
+        raise HTTPException(status_code=409, detail="This phone number is already saved")
+
+    try:
+        priority = int(body.get("priority", len(existing) + 1))
+    except (TypeError, ValueError):
+        priority = len(existing) + 1
+
+    doc = {
+        "user_id": user_id,
+        "contact_id": f"CONTACT-{int(time.time())}-{secrets.token_hex(3)}",
+        "name": name,
+        "phone": phone,
+        "email": email,
+        "priority": priority,
+        "created_at": datetime.utcnow(),
+    }
+    trusted_contacts_collection.insert_one(doc)
+
+    contacts = list(trusted_contacts_collection.find(
+        {"user_id": user_id}, {"_id": 0}).sort("priority", 1))
+    return {
+        "success": True,
+        "contact": {"name": doc["name"], "contact_id": doc["contact_id"]},
+        "contacts_saved": len(contacts),
+        "contacts": [serialize_doc(c) for c in contacts],
+    }
+
+
+@router.delete("/trusted-contacts/{contact_id}")
+def delete_trusted_contact(
+    contact_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """Delete ONE trusted contact owned by the authenticated user.
+
+    The delete filter is scoped to BOTH the contact_id AND the authenticated
+    user_id, so a user can only ever delete their OWN contact; another user's
+    contact_id simply matches nothing (404) and is never touched. Persists in
+    MongoDB and returns the authoritative remaining list.
+    """
+    if trusted_contacts_collection is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    user_id = current_user.user_id
+
+    result = trusted_contacts_collection.delete_one(
+        {"user_id": user_id, "contact_id": contact_id})
+    if result.deleted_count == 0:
+        # Not found for THIS user -> either it never existed or it belongs to
+        # someone else. Either way we reveal nothing and change nothing.
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    contacts = list(trusted_contacts_collection.find(
+        {"user_id": user_id}, {"_id": 0}).sort("priority", 1))
+    return {
+        "success": True,
+        "deleted": contact_id,
+        "contacts_saved": len(contacts),
+        "contacts": [serialize_doc(c) for c in contacts],
+    }

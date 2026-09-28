@@ -341,6 +341,147 @@ class TestTrustedContacts:
 
 
 @pytest.mark.skipif(not APP_AVAILABLE, reason="App import failed")
+class TestPerContactAddDelete:
+    """Per-contact add/delete endpoints (issue: contacts could not be added or
+    deleted reliably).
+
+    Covers the full required matrix: add, list, delete, delete-nonexistent,
+    unauthorized delete, cross-user delete, refresh persistence, invalid payload
+    and duplicate. Every write derives the owner from the verified token — a body
+    user_id/owner_id is ignored — so a client can never act on another user's
+    contacts. DB-dependent assertions self-skip when Mongo is unavailable (503) so
+    the auth/ownership guarantees still run in a DB-less CI while the persistence
+    behaviour is fully asserted wherever Mongo is reachable.
+    """
+
+    @staticmethod
+    def _uid() -> str:
+        """A fresh, unique owner per test so a persistent Atlas DB stays isolated."""
+        return f"contacts_test_{secrets.token_hex(4)}"
+
+    def _add(self, uid, name="Mom", phone="9876543210", email="", user_id_in_body=None):
+        body = {"name": name, "phone": phone, "email": email}
+        if user_id_in_body is not None:
+            body["user_id"] = user_id_in_body  # must be ignored by the server
+        return client.post("/trusted-contacts/add", json=body, headers=_auth_headers(uid))
+
+    def _skip_if_no_db(self, resp):
+        if resp.status_code == 503:
+            pytest.skip("Mongo unavailable in this environment")
+
+    # ── add ──────────────────────────────────────────────────────────────────
+    def test_add_persists_and_returns_authoritative_list(self):
+        uid = self._uid()
+        resp = self._add(uid, name="Mom", phone="9876543210")
+        self._skip_if_no_db(resp)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert data["contact"]["contact_id"].startswith("CONTACT-")
+        assert data["contacts_saved"] == 1
+        assert [c["name"] for c in data["contacts"]] == ["Mom"]
+        # Survives a refresh: GET returns the same persisted contact.
+        got = client.get(f"/trusted-contacts/{uid}", headers=_auth_headers(uid))
+        assert got.status_code == 200
+        assert any(c["name"] == "Mom" for c in got.json()["contacts"])
+
+    def test_add_requires_auth(self):
+        resp = client.post("/trusted-contacts/add",
+                            json={"name": "Mom", "phone": "9876543210"})
+        assert resp.status_code == 401
+
+    def test_add_ignores_body_user_id(self):
+        """A client-supplied user_id must NOT override the authenticated identity."""
+        owner = self._uid()
+        victim = self._uid()
+        resp = self._add(owner, name="Spoof", phone="9876500001", user_id_in_body=victim)
+        self._skip_if_no_db(resp)
+        assert resp.status_code == 200
+        # The contact landed under the TOKEN owner, not the spoofed body user_id.
+        owner_list = client.get(f"/trusted-contacts/{owner}", headers=_auth_headers(owner)).json()
+        assert any(c["name"] == "Spoof" for c in owner_list["contacts"])
+        victim_list = client.get(f"/trusted-contacts/{victim}", headers=_auth_headers(victim)).json()
+        assert all(c["name"] != "Spoof" for c in victim_list["contacts"])
+
+    def test_add_rejects_missing_name(self):
+        resp = self._add(self._uid(), name="", phone="9876543210")
+        self._skip_if_no_db(resp)
+        assert resp.status_code == 400
+
+    def test_add_rejects_invalid_phone(self):
+        resp = self._add(self._uid(), name="Mom", phone="12345")
+        self._skip_if_no_db(resp)
+        assert resp.status_code == 400
+
+    def test_add_rejects_invalid_email(self):
+        resp = self._add(self._uid(), name="Mom", phone="9876543210", email="not-an-email")
+        self._skip_if_no_db(resp)
+        assert resp.status_code == 400
+
+    def test_add_rejects_duplicate_phone(self):
+        uid = self._uid()
+        first = self._add(uid, name="Mom", phone="98765 43210")
+        self._skip_if_no_db(first)
+        assert first.status_code == 200
+        # Same digits, different formatting -> normalized-phone duplicate -> 409.
+        dup = self._add(uid, name="Mum", phone="9876543210")
+        assert dup.status_code == 409
+
+    def test_add_enforces_max_cap(self):
+        uid = self._uid()
+        for i in range(5):
+            r = self._add(uid, name=f"C{i}", phone=f"98765000{i:02d}")
+            self._skip_if_no_db(r)
+            assert r.status_code == 200
+        sixth = self._add(uid, name="C5", phone="9876511111")
+        assert sixth.status_code == 400
+
+    # ── delete ─────────────────────────────────────────────────────────────────
+    def test_delete_persists(self):
+        uid = self._uid()
+        add = self._add(uid, name="Mom", phone="9876543210")
+        self._skip_if_no_db(add)
+        assert add.status_code == 200
+        cid = add.json()["contact"]["contact_id"]
+        dele = client.delete(f"/trusted-contacts/{cid}", headers=_auth_headers(uid))
+        assert dele.status_code == 200
+        assert dele.json()["contacts_saved"] == 0
+        # Refresh persistence: the contact is really gone from Mongo.
+        got = client.get(f"/trusted-contacts/{uid}", headers=_auth_headers(uid))
+        assert all(c.get("contact_id") != cid for c in got.json()["contacts"])
+
+    def test_delete_nonexistent_returns_404(self):
+        uid = self._uid()
+        # Touch the DB so 503 environments skip rather than false-fail.
+        probe = client.get(f"/trusted-contacts/{uid}", headers=_auth_headers(uid))
+        if probe.status_code == 503:
+            pytest.skip("Mongo unavailable")
+        resp = client.delete("/trusted-contacts/CONTACT-does-not-exist",
+                             headers=_auth_headers(uid))
+        assert resp.status_code == 404
+
+    def test_delete_requires_auth(self):
+        resp = client.delete("/trusted-contacts/CONTACT-anything")
+        assert resp.status_code == 401
+
+    def test_cross_user_delete_denied_and_contact_untouched(self):
+        """User B cannot delete User A's contact: the id matches nothing for B (404)
+        and A's contact remains intact."""
+        owner = self._uid()
+        attacker = self._uid()
+        add = self._add(owner, name="Mom", phone="9876543210")
+        self._skip_if_no_db(add)
+        assert add.status_code == 200
+        cid = add.json()["contact"]["contact_id"]
+        # Attacker tries to delete the owner's contact by its real id.
+        attack = client.delete(f"/trusted-contacts/{cid}", headers=_auth_headers(attacker))
+        assert attack.status_code == 404
+        # Owner's contact is still there.
+        got = client.get(f"/trusted-contacts/{owner}", headers=_auth_headers(owner))
+        assert any(c.get("contact_id") == cid for c in got.json()["contacts"])
+
+
+@pytest.mark.skipif(not APP_AVAILABLE, reason="App import failed")
 class TestVoiceSOSHistory:
     """Tests for Voice SOS history endpoint (owner-or-authority only)."""
 

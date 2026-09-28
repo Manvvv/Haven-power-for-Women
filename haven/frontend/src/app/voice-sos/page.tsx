@@ -10,6 +10,9 @@ import { useUser } from '@clerk/nextjs'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
 import { secureFetch } from '@/lib/api'
 import { formatServerDateTime } from '@/lib/datetime'
+import {
+  deriveVoiceStatus, mapRecognitionError, VOICE_STATUS_META, type TriggerPhase,
+} from '@/lib/voiceSosStatus'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -240,8 +243,12 @@ const styles = {
 
 export default function VoiceSOSPage() {
   useHavenAuth()
-  const { user } = useUser()
-  const userId = user?.id || 'haven_user'
+  const { user, isLoaded } = useUser()
+  // Identity comes ONLY from the authenticated Clerk user. Until Clerk hydrates
+  // (`isLoaded === false`) userId is empty and we do NOT hit user-scoped
+  // endpoints with a placeholder id (which would 403 against the real token and
+  // could momentarily read/act as the wrong identity).
+  const userId = isLoaded ? (user?.id || '') : ''
 
   // --- State ---
   const [isSupported, setIsSupported] = useState<boolean | null>(null)
@@ -272,6 +279,12 @@ export default function VoiceSOSPage() {
   const [transcript, setTranscript] = useState('')
   const [testMode, setTestMode] = useState(false)
   const [testResult, setTestResult] = useState<any>(null)
+
+  // Visible lifecycle: the trigger phase + any surfaced recognition error feed
+  // deriveVoiceStatus() so the UI always shows one honest state and never fails
+  // silently. `recognitionError` holds a generic message (never the transcript).
+  const [triggerPhase, setTriggerPhase] = useState<TriggerPhase>('idle')
+  const [recognitionError, setRecognitionError] = useState('')
   
   const [micPermission, setMicPermission] = useState<'granted' | 'denied' | 'pending'>('pending')
   const [locPermission, setLocPermission] = useState<'granted' | 'denied' | 'pending'>('pending')
@@ -301,6 +314,9 @@ export default function VoiceSOSPage() {
   const wakeLockRef = useRef<any>(null)
   const isMountedRef = useRef<boolean>(true)
   const isTriggeringRef = useRef<boolean>(false)
+  // Set when recognition hits a non-recoverable error (permission blocked / no
+  // mic) so the onend auto-restart loop stops instead of spinning forever.
+  const recognitionFatalRef = useRef<boolean>(false)
   
   // --- Initialization ---
   useEffect(() => {
@@ -318,10 +334,13 @@ export default function VoiceSOSPage() {
 
     isMountedRef.current = true
 
-    // Load data
-    fetchConfig()
-    fetchContacts()
-    fetchHistory()
+    // Load data — but only once we have a real authenticated identity. Firing
+    // user-scoped fetches with an empty/placeholder id would 403 and churn.
+    if (isLoaded && userId) {
+      fetchConfig()
+      fetchContacts()
+      fetchHistory()
+    }
     checkPermissions()
     startGpsWatch()
     
@@ -345,12 +364,20 @@ export default function VoiceSOSPage() {
         trackingWsRef.current = null
       }
       if (recognitionRef.current) {
-        try { recognitionRef.current.stop() } catch { /* silent */ }
+        try {
+          // Null handlers first so the onend auto-restart can't fire after unmount.
+          recognitionRef.current.onend = null
+          recognitionRef.current.onerror = null
+          recognitionRef.current.onresult = null
+          recognitionRef.current.onstart = null
+          if (typeof recognitionRef.current.abort === 'function') recognitionRef.current.abort()
+          else recognitionRef.current.stop()
+        } catch { /* silent */ }
         recognitionRef.current = null
       }
       releaseWakeLock()
     }
-  }, [userId])
+  }, [userId, isLoaded])
 
   useEffect(() => {
     isEnabledRef.current = config.enabled
@@ -858,49 +885,87 @@ export default function VoiceSOSPage() {
   }
 
   const handleAddContact = async () => {
-    if (contacts.length >= 5 || !newContact.name || !newContact.phone) return
+    if (contacts.length >= 5) { setContactSaveMsg('Maximum of 5 contacts reached'); return }
+    if (!newContact.name.trim() || !newContact.phone.trim()) {
+      setContactSaveMsg('Name and phone number are required')
+      return
+    }
     setIsSavingContact(true)
     setContactSaveMsg('')
     try {
-      // Use a local merged list to avoid stale closure (fix: don't rely on contacts state value)
-      const merged = [...contacts, { ...newContact, priority: contacts.length + 1 }]
-      const res = await secureFetch('/trusted-contacts', {
+      // Atomic single-contact add. The server validates + dedups + returns the
+      // authoritative list, so we never full-replace from a possibly-stale
+      // client array (which could wipe or resurrect contacts). Identity is taken
+      // from the auth token server-side; we do NOT send a client user_id.
+      const res = await secureFetch('/trusted-contacts/add', {
         method: 'POST',
         body: JSON.stringify({
-          user_id: userId,
-          contacts: merged.map(c => ({ name: c.name, phone: c.phone, email: c.email || '', priority: c.priority || 1 }))
-        })
+          name: newContact.name.trim(),
+          phone: newContact.phone.trim(),
+          email: (newContact.email || '').trim(),
+        }),
       })
+      const data = await res.json().catch(() => ({} as any))
       if (res.ok) {
         setContactSaveMsg('✓ Contact saved!')
         setNewContact({ name: '', phone: '', email: '', priority: 1 })
-        // Fetch authoritative list from server
-        await fetchContacts()
+        // Trust the authoritative list the server just returned; fall back to a
+        // fresh fetch only if it was somehow omitted. Never show success unless
+        // the server confirmed persistence (res.ok above).
+        if (Array.isArray(data.contacts)) setContacts(data.contacts)
+        else await fetchContacts()
         setTimeout(() => setContactSaveMsg(''), 3000)
       } else {
-        setContactSaveMsg('Failed to save contact')
+        // Surface the real reason (duplicate / invalid phone / cap) instead of a
+        // generic message, and never claim success on a failed persist.
+        setContactSaveMsg(data.detail || 'Failed to save contact')
       }
     } catch (error) {
       console.error('Error adding contact:', error)
-      setContactSaveMsg('Error saving contact')
+      setContactSaveMsg('Error saving contact — please try again')
     }
     setIsSavingContact(false)
   }
 
-  const handleDeleteContact = async (contactName: string) => {
+  const handleDeleteContact = async (contact: TrustedContact) => {
+    setContactSaveMsg('')
     try {
-      // Build updated list locally from current state
-      const updatedContacts = contacts.filter(c => c.name !== contactName)
-      const res = await secureFetch('/trusted-contacts', {
-        method: 'POST',
-        body: JSON.stringify({
-          user_id: userId,
-          contacts: updatedContacts.map(c => ({ name: c.name, phone: c.phone, email: c.email || '', priority: c.priority || 1 }))
+      const cid = contact?.contact_id
+      if (cid) {
+        // Per-contact delete by stable id, scoped server-side to the owner.
+        const res = await secureFetch(`/trusted-contacts/${encodeURIComponent(cid)}`, {
+          method: 'DELETE',
         })
-      })
-      if (res.ok) await fetchContacts()
+        const data = await res.json().catch(() => ({} as any))
+        if (res.ok) {
+          if (Array.isArray(data.contacts)) setContacts(data.contacts)
+          else await fetchContacts()
+        } else {
+          // Resync from the server so the UI reflects the true state instead of
+          // silently leaving the contact on screen after a failed delete.
+          setContactSaveMsg(data.detail || 'Failed to delete contact')
+          await fetchContacts()
+        }
+      } else {
+        // Legacy contact saved before stable ids existed: fall back to a
+        // full-replace that removes this exact name+phone pair.
+        const updated = contacts.filter(
+          c => !(c.name === contact.name && c.phone === contact.phone),
+        )
+        const res = await secureFetch('/trusted-contacts', {
+          method: 'POST',
+          body: JSON.stringify({
+            contacts: updated.map(c => ({
+              name: c.name, phone: c.phone, email: c.email || '', priority: c.priority || 1,
+            })),
+          }),
+        })
+        if (res.ok) await fetchContacts()
+        else setContactSaveMsg('Failed to delete contact')
+      }
     } catch (error) {
       console.error('Error deleting contact:', error)
+      setContactSaveMsg('Error deleting contact — please try again')
     }
   }
 
@@ -925,6 +990,9 @@ export default function VoiceSOSPage() {
 
     recognition.onstart = () => {
       setIsListening(true)
+      // A successful (re)start clears any prior transient error and the fatal flag.
+      recognitionFatalRef.current = false
+      setRecognitionError('')
       requestWakeLock()
     }
 
@@ -941,7 +1009,7 @@ export default function VoiceSOSPage() {
           interimTranscript += event.results[i][0].transcript + ' '
         }
       }
-      
+
       const newestSpeech = (finalTranscript + ' ' + interimTranscript).trim()
       setTranscript(newestSpeech)
 
@@ -958,16 +1026,28 @@ export default function VoiceSOSPage() {
     }
 
     recognition.onerror = (event: any) => {
-      console.error('Speech recognition error', event.error)
-      if (event.error === 'not-allowed') setMicPermission('denied')
+      // Never silently fail: classify the error, mark the mic denied when the
+      // browser blocked it, flag non-recoverable errors so onend stops retrying,
+      // and surface a generic message (never the transcript) for everything that
+      // is not benign (no-speech / aborted are expected during normal pauses).
+      const info = mapRecognitionError(event?.error || '')
+      // Only the error CODE is logged — never any recognized speech.
+      console.error('Speech recognition error:', event?.error || 'unknown')
+      if (info.permissionDenied) setMicPermission('denied')
+      if (info.fatal) recognitionFatalRef.current = true
+      if (!info.benign) setRecognitionError(info.message)
     }
 
     recognition.onend = () => {
       if (isMountedRef.current) setIsListening(false)
-      // Auto-restart if still enabled, mounted, and not currently triggering SOS
-      if (isEnabledRef.current && isMountedRef.current && !isTriggeringRef.current) {
+      // Auto-restart if still enabled, mounted, not triggering, AND the last
+      // error was recoverable. A fatal error (permission / no mic) stops the loop
+      // so it can't spin forever against a blocked microphone.
+      if (isEnabledRef.current && isMountedRef.current
+          && !isTriggeringRef.current && !recognitionFatalRef.current) {
         setTimeout(() => {
-          if (isEnabledRef.current && isMountedRef.current && !isTriggeringRef.current) {
+          if (isEnabledRef.current && isMountedRef.current
+              && !isTriggeringRef.current && !recognitionFatalRef.current) {
             startListening()
           }
         }, 1200)
@@ -978,17 +1058,23 @@ export default function VoiceSOSPage() {
       recognition.start()
       recognitionRef.current = recognition
     } catch (e) {
-      console.error('Could not start recognition', e)
+      // start() throws if called while already running — surface it, don't swallow.
+      console.error('Could not start recognition')
+      setRecognitionError('Could not start listening. Try toggling Voice SOS off and on again.')
     }
   }
 
   const stopListening = () => {
     if (recognitionRef.current) {
       try {
+        // Detach handlers BEFORE stopping so the pending onend cannot auto-restart,
+        // then abort() for an immediate, true stop (stop() can linger).
         recognitionRef.current.onend = null
         recognitionRef.current.onerror = null
         recognitionRef.current.onresult = null
-        recognitionRef.current.stop()
+        recognitionRef.current.onstart = null
+        if (typeof recognitionRef.current.abort === 'function') recognitionRef.current.abort()
+        else recognitionRef.current.stop()
       } catch (e) {
         // silent
       }
@@ -1108,8 +1194,13 @@ export default function VoiceSOSPage() {
 
   const triggerSOS = async () => {
     isTriggeringRef.current = true
+    // Visible lifecycle: we are now sending. This also blocks any duplicate
+    // trigger from a second match (the banner + isTriggeringRef both guard it).
+    setTriggerPhase('processing')
+    setRecognitionError('')
     stopListening()
-    
+
+    let succeeded = false
     let lat = currentLocation?.lat || 0
     let lng = currentLocation?.lng || 0
     
@@ -1146,6 +1237,7 @@ export default function VoiceSOSPage() {
       
       if (res.ok) {
         const data = await res.json()
+        succeeded = true
         setTriggerError('')
         if (testMode) {
           setTestResult(data)
@@ -1186,19 +1278,38 @@ export default function VoiceSOSPage() {
         setTriggerError(netMsg)
       }
     } finally {
-      if (testMode) {
-        // In test mode, release triggering lock after 2.5s
+      if (!succeeded) {
+        // A failed send must NOT lock the user out in a fake cooldown. Release
+        // the guard immediately and return to idle so they can retry; the
+        // precise reason is already in triggerError / testResult.
+        isTriggeringRef.current = false
+        if (isMountedRef.current) setTriggerPhase('idle')
+        if (isEnabledRef.current && isMountedRef.current && !testMode) startListening()
+      } else if (testMode) {
+        // Test success: show "sent", then release the lock after 2.5s and resume.
+        if (isMountedRef.current) setTriggerPhase('sent')
         setTimeout(() => {
           isTriggeringRef.current = false
+          if (isMountedRef.current) setTriggerPhase('idle')
           if (isEnabledRef.current && isMountedRef.current) {
             startListening()
           }
         }, 2500)
       } else {
-        // In real SOS mode, wait for cooldown period
+        // Real SOS success: briefly confirm "sent", then a visible cooldown for
+        // the remainder (duplicate submissions blocked the whole time), then
+        // resume listening if still armed.
+        if (isMountedRef.current) setTriggerPhase('sent')
         const cooldownMs = (config.cooldown_seconds || 60) * 1000
         setTimeout(() => {
+          if (isMountedRef.current) setTriggerPhase('cooldown')
+        }, Math.min(4000, cooldownMs))
+        setTimeout(() => {
           isTriggeringRef.current = false
+          if (isMountedRef.current) setTriggerPhase('idle')
+          if (isEnabledRef.current && isMountedRef.current) {
+            startListening()
+          }
         }, cooldownMs)
       }
     }
@@ -1260,6 +1371,28 @@ export default function VoiceSOSPage() {
   }
 
   // --- Render ---
+  // Collapse all raw signals into ONE always-visible lifecycle status so the
+  // feature can never silently fail: the user always sees idle / listening /
+  // processing / triggered / cooldown / permission_denied / unsupported /
+  // failed. `hasError` is driven only by a surfaced (non-benign) recognition
+  // error — never the transcript.
+  const voiceStatus = deriveVoiceStatus({
+    isSupported,
+    micPermission,
+    triggerPhase,
+    isListening,
+    hasError: !!recognitionError,
+  })
+  const voiceStatusMeta = VOICE_STATUS_META[voiceStatus]
+  const STATUS_TONE_COLORS: Record<string, string> = {
+    danger: colors.danger,
+    success: '#16a34a',
+    warning: '#b45309',
+    info: colors.primary,
+    muted: colors.muted,
+  }
+  const voiceStatusColor = STATUS_TONE_COLORS[voiceStatusMeta.tone] || colors.dark
+
   return (
     <div style={styles.container}>
       <div style={styles.maxContainer}>
@@ -1304,10 +1437,42 @@ export default function VoiceSOSPage() {
             >
               {isListening ? <Mic size={48} /> : <MicOff size={48} />}
             </button>
-            <h3 style={{marginTop: '1.5rem', color: isListening ? colors.danger : colors.dark}}>
-              {isListening ? '🎙 Voice SOS Active — Listening...' : '● Ready'}
+            <h3
+              role="status"
+              aria-live={voiceStatusMeta.live ? 'assertive' : 'polite'}
+              style={{marginTop: '1.5rem', color: voiceStatusColor, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8}}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 10, height: 10, borderRadius: '50%',
+                  background: voiceStatusColor,
+                  boxShadow: voiceStatusMeta.live ? `0 0 0 4px ${voiceStatusColor}22` : 'none',
+                  display: 'inline-block', flexShrink: 0,
+                }}
+              />
+              {voiceStatusMeta.label}
             </h3>
           </div>
+
+          {/* Recognition-error banner: a surfaced (non-benign) Web Speech error.
+              Kept separate from the SOS-send error and never shows any transcript. */}
+          {recognitionError && (
+            <div style={{ marginTop: 12, background: '#fff7ed', border: '1px solid #fed7aa', color: '#9a3412', padding: '10px 12px', borderRadius: 10, fontSize: '0.8rem', textAlign: 'left' }}>
+              <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <AlertTriangle size={15} style={{ flexShrink: 0 }} /> Voice recognition problem
+              </div>
+              <div style={{ marginTop: 4 }}>{recognitionError}</div>
+              <div style={{ marginTop: 8 }}>
+                <button
+                  onClick={() => setRecognitionError('')}
+                  style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #fed7aa', background: 'white', color: '#9a3412', fontSize: '0.72rem', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
 
           {triggerError && (
             <div style={{ marginTop: 12, background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', padding: '10px 12px', borderRadius: 10, fontSize: '0.8rem', textAlign: 'left' }}>
@@ -1622,7 +1787,7 @@ export default function VoiceSOSPage() {
               </div>
               <button 
                 style={{background: 'none', border: 'none', color: colors.danger, cursor: 'pointer'}}
-                onClick={() => handleDeleteContact(c.name)}
+                onClick={() => handleDeleteContact(c)}
               >
                 <Trash2 size={18} />
               </button>

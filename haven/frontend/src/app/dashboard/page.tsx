@@ -1,16 +1,23 @@
 'use client'
 import { useRouter } from 'next/navigation'
-import { UserButton } from '@clerk/nextjs'
+import { UserButton, useUser } from '@clerk/nextjs'
 import { Shield, Heart, Scale, Eye, Phone, AlertTriangle, Mic } from 'lucide-react'
 import PanicButton from '@/components/PanicButton'
 import { useLang, LanguageSelector } from '@/components/LanguageContext'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
+import { resolveGreetingName } from '@/lib/greeting'
 
 export default function DashboardPage() {
   useHavenAuth()
   const router = useRouter()
   const { t } = useLang()
-  const firstName = 'Manav'
+  const { user, isLoaded } = useUser()
+  // Derive the greeting name from the AUTHENTICATED identity only:
+  //   proper display name (fullName) -> first name -> safe localized fallback.
+  // Until Clerk has hydrated (isLoaded === false) `user` is null, so we show the
+  // neutral fallback — never a stale/hardcoded or another user's name, and the
+  // wrong name can never flash before the real identity resolves.
+  const displayName = resolveGreetingName(user, isLoaded, t('friendFallback'))
   const navigate = (href: string) => router.push(href)
 
   return (
@@ -37,7 +44,7 @@ export default function DashboardPage() {
         <div style={{ marginBottom: 28 }}>
           <p style={{ fontSize: '0.85rem', color: '#8b6b7d', marginBottom: 4 }}>{t('welcomeBack')}</p>
           <h1 style={{ fontSize: 'clamp(1.5rem, 6vw, 2rem)', fontFamily: 'Georgia', color: '#1a0a12', marginBottom: 10 }}>
-            {t('hello')}, {firstName} 🌸
+            {t('hello')}, {displayName} 🌸
           </h1>
           <p style={{ color: '#8b6b7d', fontSize: 'clamp(0.85rem, 2.5vw, 0.95rem)', lineHeight: 1.7, maxWidth: 540 }}>
             {t('havenIsHere')}

@@ -1,0 +1,13 @@
+{"id": "pf01", "query": "Ramesh Kumar", "query_type": "NAME_QUERY", "note": "two-token proper name"}
+{"id": "pf02", "query": "Nirmal Nehra", "query_type": "NAME_QUERY", "note": "proper name (prior no-match bug)"}
+{"id": "pf03", "query": "Priya Sharma", "query_type": "NAME_QUERY", "note": "proper name"}
+{"id": "pf04", "query": "Rajesh Verma", "query_type": "NAME_QUERY", "note": "proper name"}
+{"id": "pf05", "query": "tall man with a beard and a scar on his cheek", "query_type": "DESCRIPTION_QUERY", "note": "physical description"}
+{"id": "pf06", "query": "wearing a black jacket and riding a red motorcycle", "query_type": "DESCRIPTION_QUERY", "note": "clothing + vehicle"}
+{"id": "pf07", "query": "heavy build bald man with a tattoo on his left arm", "query_type": "DESCRIPTION_QUERY", "note": "build + marks"}
+{"id": "pf08", "query": "young man in his twenties wearing thick glasses", "query_type": "DESCRIPTION_QUERY", "note": "age + accessory"}
+{"id": "pf09", "query": "a man named Vikram who drives a white car", "query_type": "DESCRIPTION_QUERY", "note": "name present but descriptors (drives/car/white) drive retrieval -> DESCRIPTION per routing contract"}
+{"id": "pf10", "query": "Suresh with a deep scar near his right eye", "query_type": "DESCRIPTION_QUERY", "note": "name + physical mark; descriptor present -> DESCRIPTION per contract"}
+{"id": "pf11", "query": "was it ramesh or maybe suresh from downstairs", "query_type": "MIXED_QUERY", "note": "genuinely ambiguous recollection, several plain tokens, no descriptor"}
+{"id": "pf12", "query": "Anjali Mehta", "query_type": "NAME_QUERY", "note": "proper name"}
+{"id": "pf13", "query": "someone called raju bhai i think", "query_type": "MIXED_QUERY", "note": "uncertain name recall -> ambiguous MIXED"}

@@ -498,5 +498,106 @@ def test_unsupported_hindi_never_calls_llm_and_invents_nothing(rag):
     assert resp["legal_aid"]["helplines"] and resp["emergency_resources"]
 
 
+# ═══ 7. Deterministic normalization + concept expansion (talaak / तलाक़ fix) ═══
+# Reported bug: "talaak" / "talak" / "talaaq" / "तलाक़" (nukta) and mixed-language
+# phrasing returned no_context while canonical "divorce"/"talaq"/"तलाक" worked.
+# The fix is a deterministic normalization + concept-expansion layer — NOT a
+# lowered grounding threshold and NOT a bare keyword list. These specs lock in
+# that behaviour and prove there is no over-firing / topic leak / floor lowering.
+_DIVORCE_SURFACE_FORMS = [
+    "talaak", "talaq", "talak", "talaaq", "divorce", "khula",
+    "तलाक", "तलाक़", "मुझे तलाक़ चाहिए",
+    "mujhe talaak chahiye", "meko talak lena hai", "i want talaaq",
+    "how do I get talak from my husband",
+]
+
+
+def test_normalize_devanagari_folds_the_nukta():
+    """तलाक़ (…क + combining nukta U+093C) and precomposed क़ (U+0958) both fold to
+    the nukta-less corpus form so a surface variant matches the literal keyword."""
+    assert legal_triage._NUKTA == "़"
+    assert legal_triage.normalize_devanagari("तलाक़") == "तलाक"
+    assert legal_triage.normalize_devanagari("क़") == "क"
+    assert legal_triage.normalize_devanagari("divorce") == "divorce"   # ASCII untouched
+    assert legal_triage.normalize_devanagari("") == ""
+
+
+def test_phonetic_fold_converges_romanised_divorce_variants():
+    key = legal_triage.phonetic_fold("talak")
+    for v in ("talaq", "talaak", "talak", "talaaq"):
+        assert legal_triage.phonetic_fold(v) == key, v
+    assert legal_triage.phonetic_fold("khulaa") == legal_triage.phonetic_fold("khula")
+    assert legal_triage.phonetic_fold("Divorce") == legal_triage.phonetic_fold("divorce")
+    assert legal_triage.phonetic_fold("तलाक") == "तलाक"   # non-Latin returned unchanged
+
+
+def test_legal_concepts_are_structured_not_a_bare_keyword_list():
+    for c in legal_triage.LEGAL_CONCEPTS:
+        assert c.get("id") and c.get("category") and c.get("aliases") and c.get("expansions")
+    cats = {c["category"] for c in legal_triage.LEGAL_CONCEPTS}
+    assert {"family", "women_rights", "police", "cyber", "legal_aid"} <= cats
+    assert any(c["id"] == "divorce" and c["category"] == "family"
+               for c in legal_triage.LEGAL_CONCEPTS)
+
+
+@pytest.mark.parametrize("q", _DIVORCE_SURFACE_FORMS)
+def test_divorce_variants_classify_to_family(q):
+    concepts = legal_triage.match_concepts(q)
+    assert concepts and concepts[0]["id"] == "divorce", q
+    assert legal_triage.classify_category(q) == "family", q
+
+
+def test_expand_query_injects_only_on_topic_terms():
+    exp = set(legal_triage.expand_query("talaak"))
+    assert {"divorce", "talaq", "तलाक"} <= exp
+    assert not ({"dowry", "fir", "cyber"} & exp)           # no unrelated topic bleed
+    rt = legal_triage.retrieval_tokens("talaak")
+    assert "talaak" in rt and "divorce" in rt and "talaq" in rt
+    # The public query_tokens() contract is intentionally unchanged (no leakage).
+    assert legal_triage.query_tokens("talaak") == ["talaak"]
+
+
+@pytest.mark.parametrize("q", [
+    "florblax quxzzy vrombat plonk",
+    "what is the weather today",
+    "यह काल्पनिक कानून 999999 क्या है",
+])
+def test_no_concept_over_fires_for_unrelated_queries(q):
+    assert legal_triage.match_concepts(q) == []
+    assert legal_triage.expand_query(q) == []
+
+
+@pytest.mark.parametrize("q", _DIVORCE_SURFACE_FORMS)
+def test_divorce_surface_forms_are_grounded_and_cite_hma(rag, q):
+    """Every transliterated / nukta / mixed-language divorce query reaches the SAME
+    verified Hindu Marriage Act source as the canonical term — never no_context."""
+    resp = legal_rag.answer(q)
+    assert resp["no_context"] is False and resp["grounded"] is True, q
+    assert resp["sources"], q
+    assert resp["topic"] == "family", (q, resp["topic"])
+    assert any(did.startswith("HMA-1955") for did in _doc_ids(resp)), (q, _doc_ids(resp))
+
+
+def test_normalization_does_not_lower_the_grounding_floor(rag):
+    """Retrieval was improved, thresholds were NOT lowered: nonsense and an
+    unsupported Devanagari 'law' still return no_context with no LLM call and no
+    invented sources."""
+    _fake_ai.CALLS.clear()
+    r = legal_rag.answer("florblax quxzzy vrombat plonk")
+    assert r["no_context"] is True and r["grounded"] is False and r["sources"] == []
+    assert len(_fake_ai.CALLS) == 0
+    r = legal_rag.answer("यह काल्पनिक कानून 999999 क्या है")
+    assert r["no_context"] is True and r["sources"] == []
+
+
+def test_nukta_divorce_does_not_leak_dv_or_ecourts_sources(rag):
+    """Concept expansion adds only the divorce concept's own canonical terms, so a
+    divorce query cannot pull the domestic-violence or eCourts-navigation docs."""
+    r = legal_rag.answer("मुझे तलाक़ चाहिए")
+    assert "PWDVA-2005-S3-S12" not in _doc_ids(r), _doc_ids(r)
+    r = legal_rag.answer("mujhe talaak chahiye")
+    assert not (_doc_ids(r) & {"ECOURTS-EFILING", "ECOURTS-CASE-STATUS"}), _doc_ids(r)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

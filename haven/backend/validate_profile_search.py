@@ -145,6 +145,33 @@ check(hyb["degraded"] is False, "degraded False when semantic backend simply abs
 d = ps.hybrid_description_search(COLL, "scar on left cheek black jacket", 10)
 check("PROF-ccc" in _ids(d["matches"]), "description keyword search finds scar/jacket record")
 
+# ══════════════════ AUDIT #11: canonical-matcher convergence ═════════════════
+# These checks back the HTTP regression tests (test_haven_upgrade.py,
+# TestP1SearchConsolidation) with sandbox-runnable, MEASURED assertions that the
+# SAME canonical matcher handles every required query shape and never leaks.
+
+# a) transliterated / folded name still matches (doubled-vowel fold tier)
+check("PROF-aaa" in _ids(ps.deterministic_name_search(COLL, "nirmal nehraa", 10)),
+      "transliterated/folded name 'nehraa' matches 'Nehra'")
+
+# b) MIXED query routed by the orchestrator reports public 'mixed' and still finds the lead
+rmix = ps.run_profile_search(COLL, "nirmal nehra last seen near ghaziabad", "auto", 10)
+check(rmix["query_type"] == "mixed", "auto MIXED query -> public query_type 'mixed'")
+check("PROF-aaa" in _ids(rmix["matches"]), "MIXED query still surfaces the named lead")
+
+# c) SAFE_PUBLIC_MATCH_FIELDS allowlist holds on the DESCRIPTION/HYBRID path too
+#    (not just the name path) — no bespoke shaping can leak internal fields.
+_allow = set(ps.SAFE_PUBLIC_MATCH_FIELDS)
+for res in ps.hybrid_description_search(COLL, "scar on left cheek black jacket", 10)["matches"]:
+    check(not (set(res.keys()) - _allow),
+          f"hybrid result within allowlist ({sorted(set(res.keys()) - _allow)})")
+    check("reporter_id" not in res and "description_embedding" not in res and "_id" not in res,
+          "hybrid result hides reporter_id/embedding/_id")
+
+# d) canonical disclaimer constant present with the neutral, non-accusatory text
+check("investigative references, not confirmations of guilt" in ps.PROFILE_MATCH_DISCLAIMER,
+      "PROFILE_MATCH_DISCLAIMER carries the neutral investigative-lead text")
+
 # ══════════════════════════════ PLACEHOLDER2 ═════════════════════════════════
 # 5) Retrieval levels (never identity confidence)
 check(ps.match_level(0.9) == ps.LEVEL_HIGH, "0.9 -> High")

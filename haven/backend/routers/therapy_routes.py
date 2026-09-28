@@ -158,6 +158,16 @@ def therapy_chat(
             messages = ([{"role": "system", "content": SUP.build_system_prompt(triage, language)}]
                         + history + [{"role": "user", "content": message}])
             response_text = call_groq(messages, max_tokens=220)
+            # Runtime post-generation safety filter (spec §16, §18): a prompt is not a
+            # guarantee. If the model's free-text reply diagnoses, gives a dose, promises
+            # false safety, or invents a contact number, discard it and use the reviewed
+            # deterministic fallback. NEVER applied to the deterministic crisis/med text.
+            ok, reason = SUP.validate_support_reply(response_text)
+            if not ok:
+                logger.warning("mh_chat_reply_filtered uid=%s reason=%s",
+                               _uid_hash(user_id), reason)
+                ai_available = False
+                response_text = SUP.ai_unavailable_text(language)
         except HTTPException:
             ai_available = False
             response_text = SUP.ai_unavailable_text(language)     # spec §29 failure mode

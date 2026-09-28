@@ -56,6 +56,13 @@ LLM_UNAVAILABLE_MESSAGE = (
     "review them directly, and please consult a qualified legal professional."
 )
 
+CITATION_UNVERIFIED_MESSAGE = (
+    "I drafted an answer but could not verify all of its citations against the "
+    "verified sources that were retrieved, so I am not showing that draft to avoid a "
+    "misleading or fabricated reference. The verified source passages are listed below "
+    "for you to review directly, and please consult a qualified legal professional."
+)
+
 
 # ─── text cleaning + chunking ────────────────────────────────────────────────
 _WS = re.compile(r"[ \t]+")
@@ -226,7 +233,7 @@ def _keyword_retrieve(question: str, k: int) -> list:
     coll = legal_docs()
     if coll is None:
         return []
-    tokens = legal_triage.query_tokens(question)
+    tokens = legal_triage.retrieval_tokens(question)
     if not tokens:
         return []
     rx = {"$regex": "|".join(re.escape(t) for t in tokens), "$options": "i"}
@@ -252,7 +259,7 @@ def _merge_rerank(semantic: list, keyword: list, question: str, k: int,
     inside "कानूनी"), so any passage with NO whole-word token overlap AND no genuine
     semantic-similarity hit is discarded here rather than surfaced as a weak citation.
     """
-    tokens = legal_triage.query_tokens(question)
+    tokens = legal_triage.retrieval_tokens(question)
     q_category = legal_triage.classify_category(question)
 
     def _key(d):
@@ -402,6 +409,28 @@ _LANG_INSTRUCTION = {
 # languages fall back to English — the LLM never fabricates a translated statute.
 SUPPORTED_RESPONSE_LANGS = ["en", "hi", "hinglish"]
 
+# Fixed, context-constrained grounded-answer instruction (audit gap #10). Kept as a
+# module constant so its version + fingerprint can be tracked in prompt_registry;
+# the per-request language line and retrieved context are appended at call time.
+_LEGAL_SYSTEM_INSTRUCTION = (
+    "You are Haven's legal information assistant for women in India. Answer ONLY "
+    "using the numbered legal context provided. Rules:\n"
+    "- Do NOT invent laws, sections, case names, citations, fees, deadlines or helpline numbers.\n"
+    "- Use the law exactly as named in the context (e.g. current codes like BNS/BNSS 2023 "
+    "if that is what the context says); do not substitute older codes.\n"
+    "- If the context does not contain the answer, say you cannot confirm it from the "
+    "available verified sources and recommend a qualified lawyer or legal aid.\n"
+    "- Clearly separate what the LAW says from PRACTICAL next steps.\n"
+    "- Do NOT claim a lawyer reviewed this or that any court/case database was queried.\n"
+    "- Be compassionate and concise. Refer to sources by their [number] where relevant."
+)
+try:
+    from services import prompt_registry as _PR
+    _PR.attach("legal_grounded", _LEGAL_SYSTEM_INSTRUCTION)
+    LEGAL_PROMPT_VERSION = _PR.version("legal_grounded")
+except Exception:  # observability must never break retrieval/answering
+    LEGAL_PROMPT_VERSION = "legal-grounded-v1"
+
 
 def _first_sentences(text: str, n: int = 2, limit: int = 320) -> str:
     """A short, honest summary = the first N sentences of the grounded answer."""
@@ -477,18 +506,34 @@ def answer(question: str, user_id: str = "anonymous", k: int = 5,
     result = retrieve(question, k=k)
     passages = result["passages"]
     retrieved_ids = [p.get("document_id") for p in passages if p.get("document_id")]
-    evidence_level = legal_triage.compute_evidence_level(passages)
+
+    # ── RELEVANCE FLOOR (audit #12): "some source was retrieved" is NOT enough to
+    #    ground. A passage kept by the reranker only on a single incidental keyword
+    #    hit is insufficient evidence. Require at least one passage that clears the
+    #    deterministic relevance floor (reusing the reranker's own _blended /
+    #    _kw_ratio / _precise_hits / _cat_match signals + the semantic score). If
+    #    the floor is not met we take the SAME safe no-context path below and never
+    #    call the LLM merely because weak sources exist. ──
+    relevance = legal_triage.assess_relevance(passages)
+    grounding_ok = bool(passages) and bool(relevance["passes"])
+    # Evidence is only as strong as the floor allows: weak-but-present retrieval is
+    # reported as INSUFFICIENT_EVIDENCE, never MEDIUM/HIGH.
+    evidence_level = (legal_triage.compute_evidence_level(passages)
+                      if grounding_ok else "INSUFFICIENT_EVIDENCE")
     scaffold = _scaffold(tri, evidence_level, language_hint)
 
     # ── No sufficiently relevant evidence -> never hallucinate law. Still return
-    #    safe deterministic triage help (helplines, next steps, legal aid). ──
-    if not passages:
+    #    safe deterministic triage help (helplines, next steps, legal aid). This
+    #    covers BOTH "nothing retrieved" and "retrieved but below the floor". ──
+    if not grounding_ok:
         return {
             **scaffold,
             "answer": NO_CONTEXT_MESSAGE, "summary": "", "sources": [], "grounded": False,
             "no_context": True, "disclaimer": DISCLAIMER, "status": "no_context",
-            "retrieval_mode": result["mode"], "model_info": base_meta,
-            "retrieved_document_ids": [],
+            "retrieval_mode": result["mode"], "degraded": result["degraded"],
+            "model_info": base_meta, "retrieved_document_ids": [],
+            "relevance": {"passes": False, "best_blended": relevance["best_blended"],
+                          "reason": relevance["reason"]},
         }
 
     citations = _build_citations(passages)
@@ -502,16 +547,7 @@ def answer(question: str, user_id: str = "anonymous", k: int = 5,
 
     lang_line = _LANG_INSTRUCTION.get(tri.get("language", "en"), _LANG_INSTRUCTION["en"])
     system = (
-        "You are Haven's legal information assistant for women in India. Answer ONLY "
-        "using the numbered legal context provided. Rules:\n"
-        "- Do NOT invent laws, sections, case names, citations, fees, deadlines or helpline numbers.\n"
-        "- Use the law exactly as named in the context (e.g. current codes like BNS/BNSS 2023 "
-        "if that is what the context says); do not substitute older codes.\n"
-        "- If the context does not contain the answer, say you cannot confirm it from the "
-        "available verified sources and recommend a qualified lawyer or legal aid.\n"
-        "- Clearly separate what the LAW says from PRACTICAL next steps.\n"
-        "- Do NOT claim a lawyer reviewed this or that any court/case database was queried.\n"
-        "- Be compassionate and concise. Refer to sources by their [number] where relevant.\n"
+        f"{_LEGAL_SYSTEM_INSTRUCTION}\n"
         f"- {lang_line}\n\n"
         f"### VERIFIED LEGAL CONTEXT ###\n{context}"
     )
@@ -540,6 +576,28 @@ def answer(question: str, user_id: str = "anonymous", k: int = 5,
             "retrieved_document_ids": retrieved_ids,
         }
 
+    # ── CITATION VALIDATION (audit #12): the LLM was instructed to cite sources as
+    #    [n] markers referring to the numbered VERIFIED CONTEXT above. Before we
+    #    surface the prose we deterministically confirm every [n] marker maps to a
+    #    real retrieved source (1..len(citations)). A marker like [9] when only 3
+    #    sources were retrieved is a fabricated reference — we DO NOT silently mark
+    #    grounded=true. Instead we degrade safely: withhold the unverifiable draft,
+    #    preserve the genuinely-retrieved verified sources for the user to read
+    #    directly, and never expose an invented citation. ──
+    cit_check = legal_triage.validate_citations(generated, len(citations))
+    if not cit_check["valid"]:
+        logger.warning("legal RAG citation validation failed: %s", cit_check["invalid"])
+        return {
+            **scaffold,
+            "answer": CITATION_UNVERIFIED_MESSAGE, "summary": "", "sources": citations,
+            "grounded": False, "no_context": False, "disclaimer": DISCLAIMER,
+            "status": "citation_check_failed", "degraded": True,
+            "retrieval_mode": result["mode"], "model_info": base_meta,
+            "retrieved_document_ids": retrieved_ids,
+            "citation_check": {"valid": False, "invalid_ids": cit_check["invalid"],
+                               "cited_ids": cit_check["cited"], "reason": cit_check["reason"]},
+        }
+
     return {
         **scaffold,
         "answer": generated,
@@ -553,4 +611,5 @@ def answer(question: str, user_id: str = "anonymous", k: int = 5,
         "degraded": result["degraded"],
         "model_info": base_meta,
         "retrieved_document_ids": retrieved_ids,
+        "citation_check": {"valid": True, "cited_ids": cit_check["cited"]},
     }

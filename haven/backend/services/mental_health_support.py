@@ -13,6 +13,7 @@ only from `mental_health_resources.py`.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from services import mental_health_resources as R
@@ -49,6 +50,16 @@ romantic/relationship dependency.
 - Pretend to be human, or claim you have contacted anyone.
 
 Be honest, gentle, and respectful of the person's autonomy."""
+
+# Register the live text with the central prompt registry (audit gap #10) so its
+# version + fingerprint are tracked and drift can be detected. Import-safe: the
+# registry pulls in nothing from services, so this cannot create a cycle.
+try:
+    from services import prompt_registry as _PR
+    _PR.attach("aria_support_base", _BASE_SYSTEM_PROMPT)
+    ARIA_PROMPT_VERSION = _PR.version("aria_support_base")
+except Exception:  # never let observability wiring break the support module
+    ARIA_PROMPT_VERSION = "aria-support-v1"
 
 
 def build_system_prompt(triage: TR.MHTriage, language: str) -> str:
@@ -310,15 +321,87 @@ def disclaimer() -> str:
     return DISCLAIMER
 
 
+# ─────────── Runtime post-generation safety filter for NON-crisis LLM replies ───────────
+# The system prompt forbids diagnosis / doses / false-safety / invented contacts, but a
+# prompt is not a guarantee. This deterministic post-filter enforces those bans at
+# RUNTIME on the model's free-text reply. On any hit the caller discards the reply and
+# uses the reviewed deterministic fallback instead. It is applied ONLY to the non-crisis
+# LLM branch — crisis / medication text is fixed and reviewed and is never passed here.
+_BANNED_DIAGNOSIS = re.compile(
+    r"you have (depression|anxiety|ptsd|bipolar|ocd|schizophrenia|a? ?panic disorder)|"
+    r"you are (depressed|bipolar|schizophrenic)|you'?re (depressed|bipolar)|"
+    r"\bi diagnos|\bdiagnos(e|ing|is|ed) you", re.I)
+_BANNED_FALSE_SAFETY = re.compile(
+    r"you are (completely |totally |100%? ?)?safe|you'?re safe now|"
+    r"nothing (bad )?(will|is going to) happen|i (can )?guarantee|"
+    r"i promise (you'?re|you are|nothing)", re.I)
+# A dose looks like "500 mg", "2 tablets", "10ml" — mirrors the test guard _DOSE_RE.
+_BANNED_DOSE = re.compile(r"\d+\s*(mg|ml|tablet|pill|gram|g\b|capsule|cc|mcg)", re.I)
+# Contact cues + digit runs, used to catch an IMPROVISED (unverified) phone/helpline.
+_CONTACT_CUE = re.compile(
+    r"\b(call|dial|phone|text|whatsapp|helpline|hotline|toll[- ]?free|number|contact)\b", re.I)
+_DIGIT_RUN = re.compile(r"\+?\d[\d\s\-()]{2,}\d")
+
+
+def _verified_number_digits() -> set:
+    """Digit-only forms of every number in the verified registry (e.g. '112','14416')."""
+    out = set()
+    for r in R.all_resources():
+        n = re.sub(r"\D", "", str(r.get("number") or ""))
+        if n:
+            out.add(n)
+    return out
+
+
+def validate_support_reply(text: str) -> tuple:
+    """Runtime safety check for a NON-crisis LLM reply.
+
+    Returns (ok, reason). ok=False → the reply is unsafe and MUST be replaced by the
+    deterministic fallback (`ai_unavailable_text`). Never applied to deterministic
+    crisis/medication text. Fail-safe: empty/blank output is rejected.
+    """
+    if not text or not text.strip():
+        return False, "empty"
+    if _BANNED_DIAGNOSIS.search(text):
+        return False, "diagnosis"
+    if _BANNED_FALSE_SAFETY.search(text):
+        return False, "false_safety"
+    if _BANNED_DOSE.search(text):
+        return False, "dose"
+    # Any phone/helpline-looking number that is NOT in the verified registry is treated
+    # as an improvised contact (spec: the LLM must never invent crisis contact info).
+    verified = _verified_number_digits()
+    has_cue = bool(_CONTACT_CUE.search(text))
+    for m in _DIGIT_RUN.finditer(text):
+        digits = re.sub(r"\D", "", m.group(0))
+        if not digits:
+            continue
+        looks_like_contact = len(digits) >= 6 or (has_cue and len(digits) >= 3)
+        if looks_like_contact and digits not in verified:
+            return False, "improvised_contact"
+    return True, "ok"
+
+
 def emergency_resources_for(triage: TR.MHTriage) -> List[Dict[str, Any]]:
     """Emergency + crisis resources appropriate to the triage (never fabricated)."""
     child = triage.signals.get("child_safety") and triage.minor_suspected
     women = triage.signals.get("abuse")
     if triage.risk_level == TR.IMMINENT:
         base = R.emergency_resources(child=bool(child), women=bool(women))
-        return base + [r for r in R.crisis_resources() if r not in base]
-    if triage.crisis:
-        return R.crisis_resources()
-    return []
+        out = base + [r for r in R.crisis_resources() if r not in base]
+    elif triage.crisis:
+        out = R.crisis_resources()
+    else:
+        return []
+
+    # A suspected minor in ANY crisis (HIGH/IMMINENT) is always shown the dedicated
+    # child helpline (Childline 1098) — even when the abuse-specific child_safety
+    # signal did NOT fire (e.g. a 15-year-old expressing suicidal thoughts). This is
+    # additive: it only ever adds the verified child line, never removes a resource.
+    if triage.minor_suspected and triage.crisis:
+        childline = R.get_resource("childline_1098")
+        if childline and not any(r.get("id") == "childline_1098" for r in out):
+            out = [childline] + out
+    return out
 
 

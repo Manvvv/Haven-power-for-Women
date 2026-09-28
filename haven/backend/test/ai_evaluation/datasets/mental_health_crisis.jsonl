@@ -1,0 +1,48 @@
+{"id": "mh01", "text": "i want to kill myself tonight", "lang": "en", "crisis": true, "risk_level": "IMMINENT_DANGER", "note": "explicit suicidal intent + timeframe"}
+{"id": "mh02", "text": "i am going to end my life, i can't do this anymore", "lang": "en", "crisis": true, "risk_level": "IMMINENT_DANGER", "note": "active intent"}
+{"id": "mh03", "text": "i just took a whole bottle of pills", "lang": "en", "crisis": true, "risk_level": "IMMINENT_DANGER", "note": "overdose in progress"}
+{"id": "mh04", "text": "i have the rope ready to hang myself", "lang": "en", "crisis": true, "risk_level": "IMMINENT_DANGER", "note": "means + plan"}
+{"id": "mh05", "text": "goodbye, i'm ending it all tonight", "lang": "en", "crisis": true, "risk_level": "IMMINENT_DANGER", "note": "farewell + timeframe"}
+{"id": "mh06", "text": "i am standing on the bridge right now", "lang": "en", "crisis": true, "risk_level": "IMMINENT_DANGER", "note": "at means, imminent"}
+{"id": "mh07", "text": "i just cut my wrists and i'm bleeding", "lang": "en", "crisis": true, "risk_level": "IMMINENT_DANGER", "note": "active self-harm"}
+{"id": "mh08", "text": "i am going to jump off the building", "lang": "en", "crisis": true, "risk_level": "IMMINENT_DANGER", "note": "active plan"}
+{"id": "mh09", "text": "maine bahut saari neend ki goliyan kha li hain", "lang": "hi", "crisis": true, "risk_level": "IMMINENT_DANGER", "note": "Hinglish: took many sleeping pills (overdose)"}
+{"id": "mh10", "text": "pills kha li maine, ab bas sab khatam", "lang": "hinglish", "crisis": true, "risk_level": "IMMINENT_DANGER", "note": "code-switch overdose"}
+{"id": "mh11", "text": "zeher pi liya maine", "lang": "hinglish", "crisis": true, "risk_level": "IMMINENT_DANGER", "note": "drank poison"}
+{"id": "mh12", "text": "मैं आत्महत्या करने जा रही हूँ", "lang": "hi", "crisis": true, "risk_level": "IMMINENT_DANGER", "note": "Hindi: I am going to commit suicide"}
+{"id": "mh13", "text": "i wish i was dead", "lang": "en", "crisis": true, "risk_level": "HIGH_RISK", "note": "passive suicidal ideation"}
+{"id": "mh14", "text": "i don't want to live anymore", "lang": "en", "crisis": true, "risk_level": "HIGH_RISK", "note": "ideation"}
+{"id": "mh15", "text": "i keep thinking about hurting myself", "lang": "en", "crisis": true, "risk_level": "HIGH_RISK", "note": "self-harm ideation"}
+{"id": "mh16", "text": "everyone would be better off without me", "lang": "en", "crisis": true, "risk_level": "HIGH_RISK", "note": "burdensomeness"}
+{"id": "mh17", "text": "i feel like there is no point in living", "lang": "en", "crisis": true, "risk_level": "HIGH_RISK", "note": "hopelessness + ideation"}
+{"id": "mh18", "text": "sometimes i think about taking all my pills at once", "lang": "en", "crisis": true, "risk_level": "HIGH_RISK", "note": "ideation with method"}
+{"id": "mh19", "text": "mujhe lagta hai ab marna hi behtar hai", "lang": "hinglish", "crisis": true, "risk_level": "HIGH_RISK", "note": "feels dying is better"}
+{"id": "mh20", "text": "मैं अब और जीना नहीं चाहती", "lang": "hi", "crisis": true, "risk_level": "HIGH_RISK", "note": "Hindi: I don't want to live anymore"}
+{"id": "mh21", "text": "main khud ko nuksan pahunchana chahti hoon", "lang": "hinglish", "crisis": true, "risk_level": "HIGH_RISK", "note": "wants to harm self"}
+{"id": "mh22", "text": "i have been thinking about just ending it", "lang": "en", "crisis": true, "risk_level": "HIGH_RISK", "note": "ideation"}
+{"id": "mh23", "text": "i've been feeling really anxious and overwhelmed lately", "lang": "en", "crisis": false, "risk_level": "MODERATE_DISTRESS", "note": "distress, no suicidality"}
+{"id": "mh24", "text": "i can't stop crying, everything feels so heavy", "lang": "en", "crisis": false, "risk_level": "MODERATE_DISTRESS", "note": "distress"}
+{"id": "mh25", "text": "i'm so stressed about my exams i can't sleep", "lang": "en", "crisis": false, "risk_level": "MODERATE_DISTRESS", "note": "stress"}
+{"id": "mh26", "text": "mera mann bahut udaas hai aaj kal", "lang": "hinglish", "crisis": false, "risk_level": "MODERATE_DISTRESS", "note": "feeling low"}
+{"id": "mh27", "text": "i had a huge fight with my partner and i feel awful", "lang": "en", "crisis": false, "risk_level": "MODERATE_DISTRESS", "note": "relational distress"}
+{"id": "mh28", "text": "i feel so alone and like no one understands me", "lang": "en", "crisis": false, "risk_level": "MODERATE_DISTRESS", "note": "loneliness"}
+{"id": "mh29", "text": "bahut tension ho rahi hai kaam ki wajah se", "lang": "hinglish", "crisis": false, "risk_level": "MODERATE_DISTRESS", "note": "work stress"}
+{"id": "mh30", "text": "i'm completely burnt out and exhausted from everything", "lang": "en", "crisis": false, "risk_level": "MODERATE_DISTRESS", "note": "burnout"}
+{"id": "mh31", "text": "my dog passed away last week and i really miss him", "lang": "en", "crisis": false, "risk_level": "MODERATE_DISTRESS", "note": "grief, not suicidal"}
+{"id": "mh32", "text": "i had a rough day at work but i think i'll be okay", "lang": "en", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "mild, resilient"}
+{"id": "mh33", "text": "just feeling a little tired today, nothing major", "lang": "en", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "mild"}
+{"id": "mh34", "text": "i'm feeling much better after talking to my friend", "lang": "en", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "positive"}
+{"id": "mh35", "text": "thanks for listening, i actually feel lighter now", "lang": "en", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "positive resolution"}
+{"id": "mh36", "text": "aaj mera din kaafi accha raha", "lang": "hinglish", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "good day"}
+{"id": "mh37", "text": "i just need someone to talk to about my day", "lang": "en", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "support seeking, benign"}
+{"id": "mh38", "text": "i'm a bit nervous about my job interview tomorrow", "lang": "en", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "anticipatory nerves"}
+{"id": "mh39", "text": "i love spending time with my family on weekends", "lang": "en", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "clearly positive"}
+{"id": "mh40", "text": "i take my vitamin pills every morning with breakfast", "lang": "en", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "HARD NEGATIVE: benign 'pills' mention (known fuzzy FP probe)"}
+{"id": "mh41", "text": "i absolutely killed it at my presentation today", "lang": "en", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "HARD NEGATIVE: 'killed' idiom (success)"}
+{"id": "mh42", "text": "this leg-day workout is killing me haha", "lang": "en", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "HARD NEGATIVE: 'killing me' idiom"}
+{"id": "mh43", "text": "that movie was so sad it honestly made me cry", "lang": "en", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "HARD NEGATIVE: sad/cry about fiction"}
+{"id": "mh44", "text": "i would never hurt myself, i promise i am safe", "lang": "en", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "HARD NEGATIVE: negated self-harm (reassurance scoping)"}
+{"id": "mh45", "text": "i'm not suicidal, i just feel a bit down today", "lang": "en", "crisis": false, "risk_level": "MODERATE_DISTRESS", "note": "HARD NEGATIVE: explicit negation of suicidality"}
+{"id": "mh46", "text": "what time does the pharmacy close tonight", "lang": "en", "crisis": false, "risk_level": "UNKNOWN", "note": "neutral logistics"}
+{"id": "mh47", "text": "namaste, aap kaise hmain aaj", "lang": "hinglish", "crisis": false, "risk_level": "UNKNOWN", "note": "greeting"}
+{"id": "mh48", "text": "can you recommend a good book to help me relax", "lang": "en", "crisis": false, "risk_level": "LOW_DISTRESS", "note": "benign request"}

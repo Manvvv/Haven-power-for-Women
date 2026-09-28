@@ -312,6 +312,134 @@ def main():
     check(bool(r["legal_aid"]["helplines"]) and bool(r["emergency_resources"]),
           "unsupported Hindi still returns safe triage help")
 
+    # ══════════════ AUDIT #12: relevance floor + citation validation ══════════════
+    print("── #12 relevance floor (assess_relevance, unit) ──")
+    _strong = {"score": 0.9, "_blended": 0.8, "_cat_match": True, "_precise_hits": 3, "_kw_ratio": 0.9}
+    _semantic_only = {"score": 0.62, "_blended": 0.45, "_cat_match": False, "_precise_hits": 0, "_kw_ratio": 0.0}
+    _cat_one_hit = {"score": None, "_blended": 0.30, "_cat_match": True, "_precise_hits": 1, "_kw_ratio": 0.2}
+    _weak = {"score": None, "_blended": 0.18, "_cat_match": False, "_precise_hits": 1, "_kw_ratio": 0.2}
+    _incidental_sem = {"score": 0.55, "_blended": 0.20, "_cat_match": False, "_precise_hits": 0, "_kw_ratio": 0.0}
+    check(legal_triage.assess_relevance([_strong])["passes"], "strong passage clears floor")
+    check(legal_triage.assess_relevance([_semantic_only])["passes"],
+          "genuine semantic hit above blended floor clears")
+    check(legal_triage.assess_relevance([_cat_one_hit])["passes"],
+          "on-topic (category) + 1 precise hit clears floor")
+    check(not legal_triage.assess_relevance([_weak])["passes"],
+          "lone incidental keyword hit (off-topic) BELOW floor -> rejected")
+    check(not legal_triage.assess_relevance([_incidental_sem])["passes"],
+          "semantic hit whose blended is below floor -> rejected")
+    check(not legal_triage.assess_relevance([])["passes"]
+          and legal_triage.assess_relevance([])["reason"] == "no_passages",
+          "empty passages -> reject (no_passages)")
+    check(legal_triage.assess_relevance([_weak, _strong])["qualifying"] == 1,
+          "mixed batch: only qualifying passages counted")
+
+    # REGRESSION GUARD (#12 follow-up): a canonical/legacy source that carries a
+    # genuine semantic score but NONE of the private rerank-derived fields
+    # (_blended/_kw_ratio/_precise_hits/_cat_match) MUST still clear the floor. This
+    # is exactly the fixture shape used by TestLegalRAG.test_sources_with_llm_* /
+    # test_llm_unavailable_* — retrieve() already dropped anything below MIN_SCORE,
+    # so a surviving semantic hit is adequate. Prevents a future rerank refactor
+    # from silently turning an adequate source into no_context.
+    _legacy_semantic = {"title": "PWDVA 2005", "section": "Section 12",
+                        "text": "Application to Magistrate.", "score": 0.82, "document_id": "D1"}
+    check(legal_triage.normalize_passage(_legacy_semantic)["semantic_score"] == 0.82
+          and legal_triage.normalize_passage(_legacy_semantic)["blended"] is None,
+          "normalize_passage: legacy source has semantic_score, no derived blended")
+    check(legal_triage.passage_qualifies(_legacy_semantic),
+          "legacy/normalized semantic source (no _blended) still passes the floor")
+    check(legal_triage.assess_relevance([_legacy_semantic])["passes"],
+          "assess_relevance accepts legacy semantic-only source")
+    check(not legal_triage.passage_qualifies({"score": 0.40}),
+          "semantic-only source BELOW MIN_SCORE floor still rejected (floor intact)")
+
+    print("── #12 citation validation (validate_citations, unit) ──")
+    check(legal_triage.validate_citations("As per the Act [1], you may file.", 3)["valid"],
+          "in-range citation [1] with 3 sources -> valid")
+    check(legal_triage.validate_citations("See [1] and [2].", 2)["valid"],
+          "multiple in-range citations -> valid")
+    _oob = legal_triage.validate_citations("See [5] for details.", 3)
+    check(not _oob["valid"] and _oob["invalid"] == [5] and _oob["reason"] == "fabricated_citation_id",
+          "out-of-range citation [5] with 3 sources -> fabricated")
+    check(not legal_triage.validate_citations("Refer to [0].", 3)["valid"],
+          "citation [0] is invalid (1-indexed)")
+    check(legal_triage.validate_citations("No markers, just prose.", 3)["valid"],
+          "absence of markers is allowed (not fabricated)")
+    check(not legal_triage.validate_citations("Per [1].", 0)["valid"],
+          "any marker when zero sources retrieved -> fabricated")
+    _multi = legal_triage.validate_citations("[1] then [4] then [2].", 3)
+    check(not _multi["valid"] and _multi["invalid"] == [4] and _multi["cited"] == [1, 2, 4],
+          "batch: only the out-of-range id flagged, all cited reported")
+
+    print("── #12 relevance floor end-to-end (answer gating) ──")
+    _orig_retrieve = legal_rag.retrieve
+    try:
+        # Retrieval returns a passage, but it is BELOW the relevance floor: "some
+        # source was retrieved" must NOT ground. Expect the safe no-context path
+        # and ZERO LLM calls.
+        legal_rag.retrieve = lambda q, k=5, min_score=None: {
+            "passages": [{"document_id": "WEAK-DOC", "title": "Weak", "text": "x",
+                          "_blended": 0.15, "score": None, "_cat_match": False,
+                          "_precise_hits": 1, "_kw_ratio": 0.1}],
+            "mode": "keyword_fallback", "degraded": True, "semantic_available": False}
+        _ai.CALLS.clear()
+        r = legal_rag.answer("i want divorce")
+        check(r["no_context"] and not r["grounded"] and r["sources"] == []
+              and r["answer"] == legal_rag.NO_CONTEXT_MESSAGE and len(_ai.CALLS) == 0,
+              "weak-but-present source -> no_context, NO LLM call")
+        check(r["evidence_level"] == "INSUFFICIENT_EVIDENCE"
+              and r.get("relevance", {}).get("reason") == "below_relevance_floor",
+              "below-floor retrieval reported as INSUFFICIENT_EVIDENCE + reason")
+        check(bool(r["legal_aid"]["helplines"]) and bool(r["emergency_resources"]),
+              "below-floor still returns safe deterministic triage help")
+
+        # A strongly-relevant passage clears the floor -> LLM IS allowed.
+        legal_rag.retrieve = lambda q, k=5, min_score=None: {
+            "passages": [{"document_id": "HMA-1955-S13", "title": "Hindu Marriage Act 1955",
+                          "text": "Grounds for divorce under section 13.", "section": "13",
+                          "act_name": "Hindu Marriage Act, 1955", "authority_level": "tier1_primary_statute",
+                          "_blended": 0.82, "score": 0.9, "_cat_match": True,
+                          "_precise_hits": 3, "_kw_ratio": 0.8}],
+            "mode": "keyword_fallback", "degraded": True, "semantic_available": False}
+        _ai.CALLS.clear()
+        r = legal_rag.answer("i want divorce")
+        check(r["grounded"] and not r["no_context"] and len(_ai.CALLS) == 1
+              and r.get("citation_check", {}).get("valid") is True,
+              "strongly-relevant source clears floor -> grounded + LLM called once")
+    finally:
+        legal_rag.retrieve = _orig_retrieve
+
+    print("── #12 citation validation end-to-end (fabricated id degrades) ──")
+    _orig_groq = _ai.call_groq
+    try:
+        # LLM cites [9] but at most k sources were retrieved -> fabricated reference.
+        # Must NOT silently mark grounded=true: degrade safely, preserve the real
+        # verified sources, and never surface the hallucinated draft.
+        _ai.call_groq = lambda messages, *a, **k: (_ai.CALLS.append(messages)
+                                                   or "You can file for divorce [9].")
+        _ai.CALLS.clear()
+        r = legal_rag.answer("i want divorce")
+        check(r["status"] == "citation_check_failed" and not r["grounded"] and r["degraded"] is True,
+              "fabricated citation id -> status citation_check_failed, grounded=False")
+        check(r["answer"] == legal_rag.CITATION_UNVERIFIED_MESSAGE
+              and "[9]" not in r["answer"],
+              "fabricated draft withheld -> unverified-citation message surfaced instead")
+        check(bool(r["sources"]) and all(s["document_id"] in doc_ids for s in r["sources"]),
+              "fabricated citation -> genuinely retrieved verified sources preserved")
+        check(r.get("citation_check", {}).get("invalid_ids") == [9],
+              "citation_check reports the fabricated id [9]")
+        check(len(_ai.CALLS) == 1, "LLM was called once (floor passed), fabrication caught post-hoc")
+
+        # Sanity: a valid in-range citation from the same query is accepted.
+        _ai.call_groq = lambda messages, *a, **k: (_ai.CALLS.append(messages)
+                                                   or "Grounds for divorce are set out in [1].")
+        r = legal_rag.answer("i want divorce")
+        check(r["grounded"] and r["status"] == "grounded"
+              and r.get("citation_check", {}).get("valid") is True,
+              "valid in-range citation [1] -> grounded accepted")
+    finally:
+        _ai.call_groq = _orig_groq
+
     print("\n" + "=" * 60)
     print(f"RESULT: {_PASS} passed, {len(_FAILS)} failed")
     if _FAILS:

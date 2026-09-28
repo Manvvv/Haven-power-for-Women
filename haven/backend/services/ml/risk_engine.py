@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import rule_classifier
-from .preprocessing import clean_text, SEVERITY_LEVELS
+from .preprocessing import clean_text, SEVERITY_LEVELS, SEVERITY_ORDER
 
 logger = logging.getLogger("haven_backend")
 
@@ -129,12 +129,14 @@ class RiskEngine:
         if self.backend == "transformer":
             try:
                 result = self._predict_transformer(text, rule_result)
+                result = self._apply_safety_floor(result, rule_result)
             except Exception as e:
                 logger.warning("RiskEngine: transformer inference failed, falling back to rules (%s)", e)
                 result = rule_result
         elif self.backend == "sklearn":
             try:
                 result = self._predict_sklearn(text, rule_result)
+                result = self._apply_safety_floor(result, rule_result)
             except Exception as e:
                 logger.warning("RiskEngine: sklearn inference failed, falling back to rules (%s)", e)
                 result = rule_result
@@ -142,6 +144,49 @@ class RiskEngine:
             result = rule_result
 
         return self._stamp_metadata(result)
+
+    def _apply_safety_floor(self, result: dict, rule_result: dict) -> dict:
+        """
+        Deterministic safety floor: a learned model may only *escalate* severity,
+        never *downgrade* the rule-based signal.
+
+        The rule lexicon is explainable and conservative. If it detected a higher
+        severity than the model (e.g. it saw a lethal-weapon cue the model missed),
+        we keep the higher of the two. A model can still raise severity above the
+        rules on its own evidence — but it can never lower a deterministic
+        high-risk signal below what the rules found. This enforces the platform
+        invariant "AI must not silently reduce a danger assessment"; only a human
+        authority may downgrade an active case.
+        """
+        try:
+            model_sev = str(result.get("severity", "")).upper()
+            rule_sev = str(rule_result.get("severity", "")).upper()
+            model_rank = SEVERITY_ORDER.get(model_sev, -1)
+            rule_rank = SEVERITY_ORDER.get(rule_sev, -1)
+        except Exception:
+            return result
+
+        if rule_rank > model_rank and rule_rank >= 0:
+            floored = dict(result)
+            floored["severity"] = rule_sev
+            # Lift the score to at least the rule's floor score so downstream
+            # ranking/triage never sees a suppressed number.
+            floored["risk_score"] = max(
+                int(result.get("risk_score", 0) or 0),
+                int(rule_result.get("risk_score", 0) or 0),
+            )
+            floored["safety_floor_applied"] = True
+            floored["model_severity"] = model_sev  # what the model alone said (transparency)
+            floored["explanation"] = (
+                f"{result.get('explanation', '').rstrip()} "
+                f"[Deterministic safety floor: the rule lexicon assessed {rule_sev} "
+                f"(model alone said {model_sev}); the higher severity is kept. "
+                "AI may raise but never lower a deterministic risk signal — a human authority "
+                "must verify before any downgrade.]"
+            )
+            return floored
+
+        return result
 
     def _stamp_metadata(self, result: dict) -> dict:
         """Attach uniform model metadata (Phase 1) to any backend result."""

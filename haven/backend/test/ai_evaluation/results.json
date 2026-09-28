@@ -1,0 +1,118 @@
+{
+  "note": "Measured on synthetic seed datasets — not a real-world benchmark.",
+  "results": [
+    {
+      "subsystem": "mental_health_crisis",
+      "n": 48,
+      "binary": {
+        "positive_label": "CRISIS",
+        "tp": 22,
+        "fp": 1,
+        "tn": 25,
+        "fn": 0,
+        "precision": 0.9565217391304348,
+        "recall": 1.0,
+        "specificity": 0.9615384615384616,
+        "f1": 0.9777777777777777,
+        "fpr": 0.038461538461538464,
+        "fnr": 0.0,
+        "accuracy": 0.9791666666666666,
+        "n": 48
+      },
+      "risk_level_macro_f1": 0.5753197527110571,
+      "risk_level_accuracy": 0.6041666666666666,
+      "disagreements": [
+        {
+          "id": "mh40",
+          "text": "i take my vitamin pills every morning with breakfast",
+          "true": "NON_CRISIS",
+          "pred": "CRISIS",
+          "note": "HARD NEGATIVE: benign 'pills' mention (known fuzzy FP probe)"
+        }
+      ],
+      "floor": {
+        "crisis_recall": 1.0,
+        "floor_value": 0.9,
+        "pass": true
+      }
+    },
+    {
+      "subsystem": "sos_risk",
+      "n": 32,
+      "accuracy": 0.875,
+      "macro_f1": 0.8720462543991956,
+      "under_escalations": 0,
+      "severe_recall": 1.0,
+      "disagreements": [
+        {
+          "id": "sos22",
+          "text": "a car has been slowly following behind me for a while",
+          "true": "MODERATE",
+          "pred": "HIGH",
+          "note": "possible following"
+        },
+        {
+          "id": "sos26",
+          "text": "can you help me find the nearest police station",
+          "true": "LOW",
+          "pred": "MODERATE",
+          "note": "info request"
+        },
+        {
+          "id": "sos27",
+          "text": "i want to update my emergency contact list",
+          "true": "LOW",
+          "pred": "MODERATE",
+          "note": "app admin"
+        },
+        {
+          "id": "sos28",
+          "text": "just testing the sos button to see how it works",
+          "true": "LOW",
+          "pred": "MODERATE",
+          "note": "test"
+        }
+      ],
+      "floor": {
+        "severe_recall": 1.0,
+        "floor_value": 0.9,
+        "pass": true
+      }
+    },
+    {
+      "subsystem": "intent",
+      "n": 15,
+      "accuracy": 0.9333333333333333,
+      "macro_f1": 0.9220779220779219,
+      "emergency_escalation_recall": 1.0,
+      "disagreements": [
+        {
+          "id": "in06",
+          "transcript": "someone broke into my home help me",
+          "true": "EMERGENCY",
+          "pred": "POSSIBLE_EMERGENCY",
+          "note": "intrusion"
+        }
+      ],
+      "floor": {
+        "emergency_escalation_recall": 1.0,
+        "floor_value": 0.9,
+        "pass": true
+      }
+    },
+    {
+      "subsystem": "legal_category",
+      "n": 16,
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "disagreements": []
+    },
+    {
+      "subsystem": "profile_query",
+      "n": 13,
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "disagreements": []
+    }
+  ]
+}

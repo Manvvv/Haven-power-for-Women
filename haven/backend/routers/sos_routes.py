@@ -43,6 +43,7 @@ MAX_SAVE_TEXT_CHARS = 10_000            # /save-extracted-data decoded_text ceil
 # path (here) and the WebSocket path (main.py) reject identical bad telemetry and
 # the logic is unit-testable without FastAPI/pymongo. Never fabricate values.
 from services.geo_validation import finite_in_range as _finite_in_range
+from services import anomaly_signal as _anomaly
 
 
 def _decode_image_b64(image_b64: str) -> bytes:
@@ -382,7 +383,13 @@ async def sos_location_update(
     events_coll = sos_events()
     if events_coll is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
-    event = events_coll.find_one({"event_id": update.event_id}, {"_id": 0, "user_id": 1})
+    # Read the owner AND the previous stored fix. The previous fix is used ONLY to
+    # compute the advisory anomaly signal below (data-quality / possible spoofing);
+    # it never affects authorization, which is derived from user_id.
+    event = events_coll.find_one(
+        {"event_id": update.event_id},
+        {"_id": 0, "user_id": 1, "latitude": 1, "longitude": 1, "location_timestamp": 1},
+    )
     if not event:
         raise HTTPException(status_code=404, detail="SOS event not found")
     require_self_or_authority(str(event.get("user_id", "")), current_user)
@@ -441,6 +448,38 @@ async def sos_location_update(
         stored["location_speed"] = update.speed
     if update.heading is not None:
         stored["location_heading"] = update.heading
+
+    # ── Advisory anomaly signal (spec: abuse_risk SEPARATE from emergency_risk) ──
+    # Deterministic, advisory-only telemetry check comparing this fix to the
+    # previous stored fix. It CANNOT change severity/status/dispatch, is never
+    # returned to the victim, and never auto-acts — it only annotates the case so
+    # a HUMAN authority can review possible GPS spoofing / automated senders.
+    # Wrapped defensively so it can never break a live location update.
+    try:
+        prev_fix = None
+        if event.get("latitude") is not None and event.get("longitude") is not None:
+            prev_fix = {
+                "latitude": event.get("latitude"),
+                "longitude": event.get("longitude"),
+                "location_timestamp": event.get("location_timestamp"),
+            }
+        curr_fix = {"latitude": update.latitude, "longitude": update.longitude,
+                    "timestamp": ts}
+        signal = _anomaly.assess(prev_fix, curr_fix)
+        if signal["factors"]:
+            stored["abuse_signal"] = signal   # authority-review metadata only
+            if signal["flagged_for_review"]:
+                log_audit(
+                    actor_id=current_user.user_id, role=current_user.role,
+                    action="LOCATION_ANOMALY_FLAGGED", case_id=update.event_id,
+                    result="advisory", reason=signal["level"],
+                    metadata={"event_id": update.event_id,
+                              "abuse_risk_score": signal["abuse_risk_score"],
+                              "factors": [f["code"] for f in signal["factors"]]},
+                )
+    except Exception:
+        # Advisory signal must never interfere with delivering the location fix.
+        pass
 
     if events_coll is not None:
         events_coll.update_one({"event_id": update.event_id}, {"$set": stored})

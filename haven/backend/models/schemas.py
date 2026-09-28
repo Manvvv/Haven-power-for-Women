@@ -223,3 +223,30 @@ class MoodJournalEntryModel(BaseModel):
     mood: Optional[str] = Field(None, max_length=60)
     tags: List[str] = Field(default_factory=list)
     notes: str = Field("", max_length=5000)
+
+
+# ─────────────────────── Unified AI response contract ───────────────────────
+# Typed wire shape for the shared AI contract (audit gap #9). The validate/repair
+# ENGINE lives in services/ai_contract.py (pure stdlib, unit-tested); this model
+# is the optional FastAPI `response_model` view over that same shape. Field names
+# and defaults are kept in lockstep with services.ai_contract.build().
+#
+# SAFETY: `reasoning_summary` carries OBSERVABLE EVIDENCE ONLY — never the model's
+# hidden chain-of-thought (services.ai_contract.sanitize_reasoning_summary strips
+# deliberation before it is ever set). This contract is a presentation shape; it
+# never controls role, SOS lifecycle, dispatch, DB authorization, suspension,
+# legal status, or identity.
+class AIResponse(BaseModel):
+    result: Any = None
+    confidence: float = Field(0.0, ge=0.0, le=1.0)
+    risk_level: str = "unknown"
+    reasoning_summary: str = ""
+    signals: Dict[str, Any] = Field(default_factory=dict)
+    sources: List[Dict[str, Any]] = Field(default_factory=list)
+    grounded: bool = False
+    model: str = "deterministic"
+    version: str = ""
+    degraded: bool = False
+    needs_human_review: bool = False
+    # Additive observability tag (which engine produced this). Not reasoning.
+    subsystem: str = "unknown"

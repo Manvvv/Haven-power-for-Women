@@ -106,6 +106,19 @@ tinten = TR.build_triage("mujhe lag raha hai main khud ko hurt kar lunga", "hing
 check(tinten.crisis, f"hinglish self-harm intent not flagged crisis: {tinten.risk_level}")
 tier("maine pills le li hain", "hinglish", TR.IMMINENT, TR.MODE_EMERGENCY, want_emergency=True)
 
+# ── Hinglish overdose code-switch (regression: English noun + Hindi verb) ──────
+# These previously scored UNKNOWN/crisis=False — a code-switch a real user in
+# crisis is very likely to type. Each must be an act-in-progress → IMMINENT with
+# emergency resources. Guards the mental_health_triage lexicon fix permanently.
+for m in ["kal raat maine bahut pills kha li", "pills kha li maine", "maine dawa kha li",
+          "neend ki goliyan kha li", "sleeping pills kha li", "goli kha liya",
+          "zeher pi liya", "poison kha li"]:
+    tier(m, "hinglish", TR.IMMINENT, TR.MODE_EMERGENCY, want_emergency=True)
+
+# "ending it all / ending my life" ideation must register as crisis (HIGH or above).
+for m in ["ending it all tonight", "i am ending my life", "i want to end my life"]:
+    check(TR.build_triage(m, "en").crisis, f"'ending' ideation not flagged crisis: {m!r}")
+
 # ── Reassurance / grief downgrades ────────────────────────────────────────────
 check(TR.build_triage("I used to want to die but I'm not suicidal now", "en").risk_level != TR.HIGH,
       "reassurance failed to downgrade")

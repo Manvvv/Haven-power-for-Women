@@ -27,10 +27,31 @@ INDICATORS = [
 
 # Very small, safe leet / obfuscation map. Covert SOS messages are sometimes
 # typed under stress, so we normalise a few common substitutions.
-_LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"})
+#   * @ -> a and $ -> s are always safe (never part of a bare number).
+#   * digit substitutions (0->o, 1->i, ...) are applied ONLY inside tokens that
+#     also contain letters ("k1ll" -> "kill", "h3lp" -> "help"). Standalone
+#     numbers are left intact so emergency numbers like "call 100" / "911" /
+#     "112" survive and still match the emergency-plea patterns.
+_LEET_SYMBOL = str.maketrans({"@": "a", "$": "s"})
+_LEET_DIGIT = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"})
+_ALNUM_TOKEN = re.compile(r"[0-9a-z]+")
 
 _WHITESPACE = re.compile(r"\s+")
 _REPEAT = re.compile(r"(.)\1{2,}")  # collapse "heeeelp" -> "heelp"
+
+
+def _deleet(text: str) -> str:
+    """De-obfuscate leetspeak without corrupting bare numbers."""
+    text = text.translate(_LEET_SYMBOL)
+
+    def _repl(m: "re.Match") -> str:
+        tok = m.group(0)
+        # Only substitute digits when the token also contains letters.
+        if any(c.isalpha() for c in tok):
+            return tok.translate(_LEET_DIGIT)
+        return tok  # pure number (100, 911, 112, dates, room numbers) — keep as-is
+
+    return _ALNUM_TOKEN.sub(_repl, text)
 
 
 def clean_text(text: str) -> str:
@@ -39,7 +60,7 @@ def clean_text(text: str) -> str:
 
     - unicode NFKC normalisation
     - lowercase
-    - light leet-speak de-obfuscation
+    - light leet-speak de-obfuscation (letters only; bare numbers preserved)
     - collapse 3+ repeated chars and runs of whitespace
 
     Deliberately conservative: we do NOT strip punctuation or stopwords here,
@@ -50,7 +71,7 @@ def clean_text(text: str) -> str:
         return ""
     text = unicodedata.normalize("NFKC", str(text))
     text = text.lower()
-    text = text.translate(_LEET)
+    text = _deleet(text)
     text = _REPEAT.sub(r"\1\1", text)
     text = _WHITESPACE.sub(" ", text).strip()
     return text

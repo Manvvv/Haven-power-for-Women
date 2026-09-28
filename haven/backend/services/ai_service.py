@@ -106,16 +106,14 @@ def get_embedding(text: str) -> list:
 
 def classify_risk(text: str) -> dict:
     """Classify risk using structured prompt."""
+    from services.ai_contract import parse_llm_json
+    from services import prompt_registry as PR
     prompt = f"Classify the following text for risk severity and indicators. Return only JSON with severity, risk_score, indicators, confidence, explanation.\n\nText: {text}"
-    system = "You are a risk classification AI. Output only valid JSON."
+    system = PR.system_text("risk_classify")
     messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
     result = call_groq(messages)
-    import json, re
-    try:
-        parsed = json.loads(re.sub(r'```json|```', '', result).strip())
-    except Exception:
-        parsed = {}
-    return {
+    parsed = parse_llm_json(result) or {}
+    out = {
         "severity": parsed.get("severity", "UNKNOWN"),
         "risk_score": parsed.get("risk_score", 0),
         "indicators": parsed.get("indicators", []),
@@ -124,29 +122,24 @@ def classify_risk(text: str) -> dict:
         "model_version": "groq-demo-v1",
         "is_demo_mode": True
     }
+    return PR.stamp(out, prompt_id="risk_classify")
 
 def summarize_case(case_data: dict) -> dict:
     """Summarize case."""
+    from services.ai_contract import parse_llm_json
+    from services import prompt_registry as PR
     prompt = f"Summarize the following case data. Return JSON with situation_summary, detected_concerns, risk_indicators, location_info, requested_assistance, review_priority, disclaimer.\n\nData: {case_data}"
-    system = "You are an AI case summarizer. Output only valid JSON."
+    system = PR.system_text("case_summarize")
     messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
     result = call_groq(messages)
-    import json, re
-    try:
-        parsed = json.loads(re.sub(r'```json|```', '', result).strip())
-    except Exception:
-        parsed = {}
-    return parsed
+    return PR.stamp(parse_llm_json(result) or {}, prompt_id="case_summarize")
 
 def detect_emergency_intent(transcript: str) -> dict:
     """Detect emergency intent."""
+    from services.ai_contract import parse_llm_json
+    from services import prompt_registry as PR
     prompt = f"Detect emergency intent from transcript. Return JSON with is_emergency, confidence, primary_intent.\n\nTranscript: {transcript}"
-    system = "You are an emergency intent detector. Output only valid JSON."
+    system = PR.system_text("intent_detect")
     messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
     result = call_groq(messages)
-    import json, re
-    try:
-        parsed = json.loads(re.sub(r'```json|```', '', result).strip())
-    except Exception:
-        parsed = {}
-    return parsed
+    return PR.stamp(parse_llm_json(result) or {}, prompt_id="intent_detect")

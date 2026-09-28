@@ -182,6 +182,15 @@ SAFE_PUBLIC_MATCH_FIELDS = frozenset(_PUBLIC_FIELDS) | {
 
 _HUMAN_VERIFICATION_REQUIRED = True
 
+# Canonical, non-accusatory disclaimer returned alongside every match set. Kept
+# HERE (the canonical matcher module) so every profile-matching endpoint speaks
+# with one voice — a profile match is an investigative lead for human
+# verification, never a confirmation of guilt or identity.
+PROFILE_MATCH_DISCLAIMER = (
+    "Records are investigative references, not confirmations of guilt or identity. "
+    "Treat all matches as leads for human verification."
+)
+
 
 def match_level(score: float) -> str:
     """Map a 0..1 retrieval score to a coarse, non-numeric level."""
