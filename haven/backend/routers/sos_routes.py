@@ -21,6 +21,7 @@ from services.ai_service import get_embedding
 from services.lifecycle_service import transition_sos, canonical_status, is_terminal_status
 from services.notification_service import notification_manager
 from services.audit_service import log_audit
+from services.incident_location import canonical_coord_fields
 from models.schemas import EvidenceUploadModel, LocationUpdateModel
 
 logger = logging.getLogger("haven_backend")
@@ -260,6 +261,14 @@ async def save_extracted_data(
     }
     if idempotency_key:
         doc["idempotency_key"] = idempotency_key
+
+    # Canonical numeric fix: the PanicButton (and some steganography submissions)
+    # send `location` as a "lat,lng" string. Parse it ONCE here, server-side, into
+    # the numeric latitude/longitude the Rapid Response Network resolver and the
+    # authority map expect — so a case whose card shows coordinates can actually be
+    # dispatched. The human-readable `location` string is preserved as-is above;
+    # a non-coordinate place name yields {} and the row simply has no numeric fix.
+    doc.update(canonical_coord_fields(location_text=doc.get("location", "")))
 
     # Persist. If the write fails, surface 503 — never report a save that did not happen.
     try:

@@ -1,6 +1,7 @@
 """Haven Women Safety Platform - Main Backend Application Entry Point."""
 import os
 import logging
+from urllib.parse import urlsplit
 from datetime import datetime
 from typing import Optional, List, Dict
 from pathlib import Path
@@ -167,11 +168,80 @@ app.add_middleware(BodySizeLimitMiddleware, max_body_bytes=MAX_REQUEST_BODY_BYTE
 logger.info("Global request-body ceiling: %d bytes", MAX_REQUEST_BODY_BYTES)
 
 # ─── CORS Configuration ─────────────────────────────────────
-ALLOWED_ORIGINS_RAW = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
-allowed_origins = [o.strip() for o in ALLOWED_ORIGINS_RAW.split(",") if o.strip()]
+_LOCAL_ORIGIN_MARKERS = ("localhost", "127.0.0.1", "[::1]")
+
+
+def _is_local_origin(origin: str) -> bool:
+    lowered = (origin or "").strip().lower()
+    return any(marker in lowered for marker in _LOCAL_ORIGIN_MARKERS)
+
+
+def _is_https_origin(origin: str) -> bool:
+    try:
+        parsed = urlsplit(origin)
+        return (
+            parsed.scheme.lower() == "https"
+            and bool(parsed.hostname)
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.path in ("", "/")
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except ValueError:
+        return False
+
+
+def resolve_cors_origins(
+    *,
+    is_production: bool,
+    allowed_origins_raw: Optional[str],
+    frontend_url: Optional[str],
+) -> List[str]:
+    """Build the credentialed CORS allowlist.
+
+    Development defaults to local Next.js origins. Production refuses to boot
+    with only localhost origins or a wildcard, because allow_credentials=True.
+    Origin values are returned to the caller; they are not secrets.
+    """
+    origins: List[str] = []
+    if allowed_origins_raw and allowed_origins_raw.strip():
+        origins = [o.strip().rstrip("/") for o in allowed_origins_raw.split(",") if o.strip()]
+    normalized_frontend = (frontend_url or "").strip().rstrip("/")
+    if normalized_frontend and normalized_frontend not in origins:
+        origins.append(normalized_frontend)
+    if any(o == "*" for o in origins):
+        raise RuntimeError(
+            "HAVEN refuses wildcard CORS origins (ALLOWED_ORIGINS=*) because "
+            "credentialed requests are enabled. Set explicit HTTPS frontend origins."
+        )
+    if not origins:
+        if is_production:
+            raise RuntimeError(
+                "HAVEN refuses to start in production without ALLOWED_ORIGINS or "
+                "FRONTEND_URL. Set them to the deployed HTTPS frontend origin(s)."
+            )
+        return ["http://localhost:3000", "http://127.0.0.1:3000"]
+    if is_production and any(not _is_https_origin(origin) for origin in origins):
+        raise RuntimeError(
+            "HAVEN refuses non-HTTPS or invalid production CORS origins. "
+            "Set ALLOWED_ORIGINS and FRONTEND_URL to HTTPS frontend origins."
+        )
+    if is_production and not any(not _is_local_origin(o) for o in origins):
+        raise RuntimeError(
+            "HAVEN refuses to start in production with only localhost CORS origins. "
+            "Set ALLOWED_ORIGINS and/or FRONTEND_URL to the deployed HTTPS frontend."
+        )
+    return origins
+
+
+ALLOWED_ORIGINS_RAW = os.getenv("ALLOWED_ORIGINS")
 frontend_env = os.getenv("FRONTEND_URL")
-if frontend_env and frontend_env not in allowed_origins:
-    allowed_origins.append(frontend_env.strip())
+allowed_origins = resolve_cors_origins(
+    is_production=IS_PRODUCTION,
+    allowed_origins_raw=ALLOWED_ORIGINS_RAW,
+    frontend_url=frontend_env,
+)
 
 # Browsers reject `allow_origins=*` (or a ".*" regex) together with
 # allow_credentials=True. Use the explicit allowlist so credentialed requests work.
@@ -236,6 +306,12 @@ class LiveTrackingManager:
         return self.latest_locations.pop(event_id, None) is not None
 
 tracking_manager = LiveTrackingManager()
+
+# Rapid Response Network: a SECOND, independent live-location room keyed by
+# dispatch_id. It carries the assigned RESPONDER's live GPS to the victim +
+# authorities (the victim's own GPS stays on tracking_manager/`/ws/track`). Reusing
+# LiveTrackingManager keeps the exact same validated-broadcast + purge semantics.
+dispatch_manager = LiveTrackingManager()
 
 
 # WebSocket close codes (application-defined, 4000-4999 range).
@@ -392,6 +468,140 @@ async def websocket_tracking_endpoint(
             pass
 
 
+# ─── Rapid Response Network: live responder-location WebSocket ──────────────
+def _authorize_ws_dispatch(token: Optional[str], dispatch_id: str):
+    """Verify the WS token and authorize it against a dispatch room.
+
+    Returns (auth_user, can_broadcast). Raises ValueError((code, reason)) the caller
+    turns into a clean close. Trust is derived from the verified token + the
+    dispatch record — never from the dispatch_id alone.
+
+      * the ASSIGNED responder may BROADCAST location, but ONLY while actively
+        assigned (status ACCEPTED/EN_ROUTE/ARRIVED) — location sharing starts only
+        after acceptance and stops once help is provided or the dispatch ends.
+      * the victim who owns the case may SUBSCRIBE (read-only).
+      * an authority/admin may SUBSCRIBE (read-only).
+      * anyone else is rejected.
+    """
+    from auth import decode_token
+    from fastapi import HTTPException as _HTTPException
+    from services import dispatch_service as _ds
+
+    if not token:
+        raise ValueError((WS_UNAUTHENTICATED, "missing token"))
+    try:
+        claims = decode_token(token)
+    except _HTTPException:
+        raise ValueError((WS_UNAUTHENTICATED, "invalid or expired token"))
+    except Exception:
+        raise ValueError((WS_UNAUTHENTICATED, "invalid token"))
+
+    user_id = claims.get("user_id") or claims.get("sub")
+    role = (claims.get("role") or "user").lower()
+
+    d = _ds.get_dispatch(dispatch_id)
+    if not d:
+        raise ValueError((WS_EVENT_NOT_FOUND, "unknown dispatch"))
+
+    assigned = d.get("assigned_responder_id")
+    d_status = d.get("status")
+    is_assigned_responder = bool(user_id) and role == "responder" and user_id == assigned
+    can_broadcast = is_assigned_responder and d_status in ("ACCEPTED", "EN_ROUTE", "ARRIVED")
+
+    # Victim ownership: internal victim_user_id first, then the case/event owner.
+    is_victim = bool(user_id) and bool(d.get("victim_user_id")) and str(d.get("victim_user_id")) == str(user_id)
+    if not is_victim and role == "user" and user_id:
+        from services.db import sos_events as _ev, sos_cases as _cs
+        case_id = d.get("case_id")
+        try:
+            evc = _ev()
+            ev = evc.find_one({"event_id": case_id}, {"_id": 0, "user_id": 1}) if evc is not None else None
+            if ev and str(ev.get("user_id", "")) == str(user_id):
+                is_victim = True
+        except Exception:
+            pass
+        if not is_victim:
+            try:
+                csc = _cs()
+                cs = csc.find_one({"case_id": case_id}, {"_id": 0, "user_id": 1}) if csc is not None else None
+                if cs and str(cs.get("user_id", "")) == str(user_id):
+                    is_victim = True
+            except Exception:
+                pass
+
+    is_observer = role in _WS_OBSERVER_ROLES or is_victim or is_assigned_responder
+    if not (can_broadcast or is_observer):
+        raise ValueError((WS_FORBIDDEN, "not authorized for this dispatch"))
+    return {"user_id": user_id, "role": role}, can_broadcast
+
+
+@app.websocket("/ws/dispatch/{dispatch_id}")
+async def websocket_dispatch_endpoint(
+    websocket: WebSocket,
+    dispatch_id: str,
+    token: Optional[str] = Query(None),
+):
+    """Live responder-location room for one dispatch (authenticated, role-scoped)."""
+    try:
+        _auth_user, can_broadcast = _authorize_ws_dispatch(token, dispatch_id)
+    except ValueError as e:
+        code, reason = e.args[0]
+        try:
+            from services.audit_service import log_audit
+            log_audit(actor_id="unknown", role="unknown",
+                      action="WS_DISPATCH_CONNECT_REJECTED", result="denied", reason=str(reason),
+                      metadata={"dispatch_id": dispatch_id, "close_code": code}, request=websocket)
+        except Exception:
+            pass
+        await websocket.close(code=code)
+        return
+
+    try:
+        from services.audit_service import log_audit
+        log_audit(actor_id=_auth_user.get("user_id") or "unknown", role=_auth_user.get("role") or "unknown",
+                  action="WS_DISPATCH_CONNECTED", result="success",
+                  metadata={"dispatch_id": dispatch_id, "can_broadcast": can_broadcast}, request=websocket)
+    except Exception:
+        pass
+
+    await dispatch_manager.connect(dispatch_id, websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            # Only the actively-assigned responder may push coordinates.
+            if not can_broadcast:
+                continue
+            lat = _finite_or_none(data.get("latitude"))
+            lng = _finite_or_none(data.get("longitude"))
+            if lat is None or not (-90.0 <= lat <= 90.0) or \
+               lng is None or not (-180.0 <= lng <= 180.0):
+                continue
+            ts_in = data.get("timestamp")
+            payload = {
+                "dispatch_id": dispatch_id,
+                "latitude": lat,
+                "longitude": lng,
+                "timestamp": ts_in if isinstance(ts_in, str) and ts_in else datetime.utcnow().isoformat(),
+            }
+            acc = _finite_or_none(data.get("accuracy"))
+            if acc is not None and 0.0 <= acc <= 100000.0:
+                payload["accuracy"] = acc
+            await dispatch_manager.broadcast_location(dispatch_id, payload)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        dispatch_manager.disconnect(dispatch_id, websocket)
+        try:
+            from services.audit_service import log_audit
+            log_audit(actor_id=_auth_user.get("user_id") or "unknown", role=_auth_user.get("role") or "unknown",
+                      action="WS_DISPATCH_DISCONNECTED", result="success",
+                      metadata={"dispatch_id": dispatch_id}, request=websocket)
+        except Exception:
+            pass
+
+
 # ─── Root & Health Check ────────────────────────────────────
 @app.get("/")
 def root():
@@ -419,6 +629,7 @@ from routers.notification_routes import router as notification_router
 from routers.analytics_routes import router as analytics_router
 from routers.privacy_routes import router as privacy_router
 from routers.search_routes import router as search_router
+from routers.dispatch_routes import router as dispatch_router
 
 app.include_router(auth_router)
 app.include_router(sos_router)
@@ -435,6 +646,90 @@ app.include_router(notification_router)
 app.include_router(analytics_router)
 app.include_router(privacy_router)
 app.include_router(search_router)
+app.include_router(dispatch_router)
+
+
+# ─── Rapid Response Network: background escalation sweeper ──────────────────
+# BACKEND-owned timing: offers time out after dispatch_service.DISPATCH_ACCEPT_
+# TIMEOUT_SECONDS (snapshotted per dispatch), never a frontend timer. This loop
+# calls the pure, idempotent process_expirations() on a fixed cadence and pushes
+# any resulting re-offer / FAILED notification intents. It is safe to run even if
+# another worker also sweeps: the PENDING→TIMEOUT claim is a single-doc guard.
+import asyncio as _asyncio
+
+_SWEEP_INTERVAL_SECONDS = 5
+
+
+@app.on_event("startup")
+async def _seed_dev_responders():
+    """Non-production only: seed development responder accounts so a developer
+    can exercise the full dispatch flow locally without a manual provisioning step.
+
+    This is intentionally a no-op in production (IS_PRODUCTION guard inside
+    ensure_dev_responder) and never bypasses the verification requirement — the
+    dev unit is seeded with verified=True and a fresh GPS fix exactly as described
+    in the security model. In production, operators must provision accounts via
+    provision_responder.py and approve them through the admin workflow.
+    """
+    if IS_PRODUCTION:
+        return
+    try:
+        from services import responder_service as _rs
+        _rs.ensure_dev_responder()
+        # After seeding, give the dev unit a fresh GPS fix so find_eligible sees it.
+        import os as _os
+        _badge = _os.getenv("DEV_RESPONDER_BADGE", "HN-204")
+        _rec = _rs.get_responder(_badge)
+        if _rec and _rec.get("current_location") is None:
+            # Seed a valid GPS fix so the dev unit passes the freshness predicate.
+            # Coordinates: Bengaluru city centre (same area used in RRN test suite).
+            # Override with DEV_RESPONDER_LNG / DEV_RESPONDER_LAT env vars.
+            _lng = float(_os.getenv("DEV_RESPONDER_LNG", "77.5946"))
+            _lat = float(_os.getenv("DEV_RESPONDER_LAT", "12.9716"))
+            _rs.update_location(
+                _rec.get("responder_id") or f"RESP-{_badge}",
+                longitude=_lng,
+                latitude=_lat,
+            )
+        logger.info("Dev responder seeded (non-production only).")
+    except Exception as _e:
+        logger.warning("Could not seed dev responder: %s", _e)
+
+
+@app.on_event("startup")
+async def _start_dispatch_sweeper():
+    # Capture the running loop so SYNC side-effect boundaries (e.g. the case-
+    # resolution hook running in a threadpool) can schedule live pushes.
+    try:
+        from services import dispatch_notify
+        dispatch_notify.set_event_loop(_asyncio.get_running_loop())
+    except Exception:
+        pass
+
+    async def _sweep_loop():
+        from services import dispatch_service
+        from services.dispatch_notify import emit_intents as _emit
+        while True:
+            try:
+                await _asyncio.sleep(_SWEEP_INTERVAL_SECONDS)
+                # process_expirations is sync + pure; run it off the event loop.
+                result = await _asyncio.to_thread(dispatch_service.process_expirations)
+                await _emit(result.get("notify"))
+            except _asyncio.CancelledError:
+                break
+            except Exception:
+                # A sweep failure must never kill the loop; try again next tick.
+                pass
+
+    app.state._dispatch_sweeper_task = _asyncio.create_task(_sweep_loop())
+
+
+@app.on_event("shutdown")
+async def _stop_dispatch_sweeper():
+    task = getattr(app.state, "_dispatch_sweeper_task", None)
+    if task is not None:
+        task.cancel()
+
 
 if __name__ == "__main__":
     import uvicorn

@@ -16,9 +16,12 @@
 export type VoiceSosStatus =
   | 'unsupported'
   | 'processing'
+  | 'verifying'
   | 'triggered'
   | 'cooldown'
   | 'permission_denied'
+  | 'location_denied'
+  | 'backend_unavailable'
   | 'failed'
   | 'listening'
   | 'idle'
@@ -59,14 +62,17 @@ export interface StatusMeta { label: string; tone: StatusTone; live: boolean }
 
 /** Presentation metadata per status (English defaults; page may localize). */
 export const VOICE_STATUS_META: Record<VoiceSosStatus, StatusMeta> = {
-  unsupported:       { label: 'Not supported on this browser', tone: 'warning', live: false },
-  permission_denied: { label: 'Microphone blocked',            tone: 'danger',  live: false },
-  processing:        { label: 'Sending SOS…',                  tone: 'danger',  live: true  },
-  triggered:         { label: 'SOS sent',                      tone: 'success', live: true  },
-  cooldown:          { label: 'Cooldown — SOS just sent',      tone: 'warning', live: false },
-  failed:            { label: 'Something went wrong',          tone: 'danger',  live: false },
-  listening:         { label: 'Listening for your safe word',  tone: 'info',    live: true  },
-  idle:              { label: 'Ready',                         tone: 'muted',   live: false },
+  unsupported:          { label: 'Not supported on this browser', tone: 'warning', live: false },
+  permission_denied:    { label: 'Microphone blocked',            tone: 'danger',  live: false },
+  processing:           { label: 'Sending SOS…',                  tone: 'danger',  live: true  },
+  verifying:            { label: 'Verifying safe word…',           tone: 'danger',  live: true  },
+  triggered:            { label: 'SOS sent',                      tone: 'success', live: true  },
+  cooldown:             { label: 'Cooldown — SOS just sent',      tone: 'warning', live: false },
+  location_denied:      { label: 'SOS sent — location unavailable', tone: 'warning', live: true },
+  backend_unavailable:  { label: 'Server unreachable',            tone: 'danger',  live: false },
+  failed:               { label: 'Something went wrong',          tone: 'danger',  live: false },
+  listening:            { label: 'Listening for your safe word',  tone: 'info',    live: true  },
+  idle:                 { label: 'Ready',                         tone: 'muted',   live: false },
 }
 
 export interface RecognitionErrorInfo {

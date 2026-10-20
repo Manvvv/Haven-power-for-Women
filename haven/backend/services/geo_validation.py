@@ -37,3 +37,34 @@ def finite_or_none(value):
     except (TypeError, ValueError):
         return None
     return f if math.isfinite(f) else None
+
+
+# Mean Earth radius (metres) — WGS84 mean, matches MongoDB 2dsphere's sphere model
+# closely enough for a straight-line (great-circle) distance estimate.
+_EARTH_RADIUS_M = 6_371_008.8
+
+
+def haversine_meters(lat1, lng1, lat2, lng2):
+    """Great-circle distance in metres between two WGS84 points, or None.
+
+    STRAIGHT-LINE only — this is NOT a routed/road distance and must never be
+    presented as an ETA or drive time (the Rapid Response Network reports
+    distance_type="straight_line" and eta_minutes=null). Returns None if any
+    coordinate is missing/NaN/±inf/out-of-range so callers never fabricate a
+    distance from bad input.
+    """
+    a_lat = finite_or_none(lat1)
+    a_lng = finite_or_none(lng1)
+    b_lat = finite_or_none(lat2)
+    b_lng = finite_or_none(lng2)
+    if a_lat is None or a_lng is None or b_lat is None or b_lng is None:
+        return None
+    if not (LAT_MIN <= a_lat <= LAT_MAX and LAT_MIN <= b_lat <= LAT_MAX):
+        return None
+    if not (LNG_MIN <= a_lng <= LNG_MAX and LNG_MIN <= b_lng <= LNG_MAX):
+        return None
+    phi1, phi2 = math.radians(a_lat), math.radians(b_lat)
+    dphi = math.radians(b_lat - a_lat)
+    dlmb = math.radians(b_lng - a_lng)
+    h = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlmb / 2) ** 2
+    return 2 * _EARTH_RADIUS_M * math.asin(min(1.0, math.sqrt(h)))

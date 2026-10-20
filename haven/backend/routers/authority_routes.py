@@ -151,3 +151,89 @@ def discreet_dispatch(
     log_audit(current_user.user_id, current_user.role, "DISPATCH_SENT",
               case_id=payload.case_id, metadata={"type": payload.dispatch_type})
     return serialize_doc(dispatch_doc)
+
+
+# ─── Authority Provider Registration & Action Requests ───────────────────────────
+from services import provider_registration_service as prs  # noqa: E402
+
+
+@router.post("/authority/providers/register", status_code=201)
+def authority_register_provider_endpoint(
+    body: dict,
+    current_user: AuthUser = Depends(require_authority),
+):
+    """Authority submits a provider registration within its jurisdiction for admin review.
+
+    This enters PENDING_REVIEW status; it does NOT verify, activate, or grant dispatch
+    eligibility to the provider. Only Admin review can approve and issue setup credentials.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Invalid request body.")
+    try:
+        doc = prs.submit_registration(
+            unit_name=body.get("unit_name") or body.get("display_name"),
+            organization=body.get("organization"),
+            provider_category=body.get("provider_category"),
+            jurisdiction=body.get("jurisdiction"),
+            contact=body.get("contact"),
+            auth_reference=body.get("auth_reference") or body.get("authorization_reference"),
+            submitted_by=current_user.user_id,
+            submitted_by_role=current_user.role,
+            badge_number=body.get("badge_number"),
+            capabilities=body.get("capabilities"),
+            notes=body.get("notes"),
+        )
+        return {"success": True, "registration": doc}
+    except prs.RegistrationValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except prs.RegistrationConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/authority/providers/registrations")
+def authority_list_registrations_endpoint(
+    status: str = None,
+    current_user: AuthUser = Depends(require_authority),
+):
+    """List provider registration requests submitted by or accessible to this Authority."""
+    submitted_by = current_user.user_id if current_user.role != "admin" else None
+    rows = prs.list_registrations(submitted_by=submitted_by, status=status)
+    return {"registrations": rows, "total": len(rows)}
+
+
+@router.post("/authority/providers/{responder_id}/request-action", status_code=201)
+def authority_request_provider_action_endpoint(
+    responder_id: str,
+    body: dict,
+    current_user: AuthUser = Depends(require_authority),
+):
+    """Authority submits a suspension or revocation request for a provider."""
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Invalid request body.")
+    req_type = body.get("request_type")
+    reason = body.get("reason")
+    try:
+        doc = prs.submit_provider_request(
+            responder_id=responder_id,
+            request_type=req_type,
+            reason=reason,
+            submitted_by=current_user.user_id,
+            submitted_by_role=current_user.role,
+        )
+        return {"success": True, "request": doc}
+    except prs.RegistrationValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except prs.RegistrationNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/authority/providers/action-requests")
+def authority_list_action_requests_endpoint(
+    status: str = None,
+    current_user: AuthUser = Depends(require_authority),
+):
+    """List provider action (suspension/revocation) requests."""
+    submitted_by = current_user.user_id if current_user.role != "admin" else None
+    rows = prs.list_provider_requests(submitted_by=submitted_by, status=status)
+    return {"requests": rows, "total": len(rows)}
+

@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import {
   Shield,
   Search,
@@ -14,7 +14,10 @@ import {
   AlertTriangle,
   RefreshCw,
   Lock,
-  ArrowLeft
+  ArrowLeft,
+  ClipboardList,
+  X,
+  UserCheck,
 } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -22,6 +25,15 @@ import { useUser } from '@clerk/nextjs'
 import { secureFetch } from '@/lib/api'
 import { formatServerDateTime } from '@/lib/datetime'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
+import {
+  adminGetProviderRegistrations,
+  adminApproveRegistration,
+  adminRejectRegistration,
+  adminGetProviderRequests,
+  adminReviewProviderRequest,
+  ProviderRegistration,
+  ProviderActionRequest,
+} from '@/lib/dispatch'
 
 const colors = {
   primary: '#be185d',
@@ -84,7 +96,7 @@ export default function AdminPage() {
 
   const isAdmin = access === 'admin'
 
-  const [activeTab, setActiveTab] = useState<'audit' | 'users' | 'system'>('audit')
+  const [activeTab, setActiveTab] = useState<'audit' | 'users' | 'system' | 'registrations'>('audit')
   const [logs, setLogs] = useState<any[]>([])
   const [users, setUsers] = useState<any[]>([])
   const [systemStats, setSystemStats] = useState<any>(null)
@@ -92,12 +104,40 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
+  // Provider Registrations & Action Requests (admin review)
+  const [providerRegs, setProviderRegs] = useState<ProviderRegistration[]>([])
+  const [providerRequests, setProviderRequests] = useState<ProviderActionRequest[]>([])
+  const [regsLoading, setRegsLoading] = useState(false)
+  const [regsError, setRegsError] = useState('')
+  const [approveModal, setApproveModal] = useState<ProviderRegistration | null>(null)
+  const [rejectModal, setRejectModal] = useState<ProviderRegistration | null>(null)
+  const [reviewRequestModal, setReviewRequestModal] = useState<ProviderActionRequest | null>(null)
+  const [rejectReason, setRejectReason] = useState('')
+  const [reviewAction, setReviewAction] = useState<'approve' | 'reject'>('approve')
+  const [reviewNotes, setReviewNotes] = useState('')
+  const [regsActionBusy, setRegsActionBusy] = useState(false)
+  const [issuedToken, setIssuedToken] = useState<{ token: string; unitName: string } | null>(null)
+
   // Filters for audit logs
   const [page, setPage] = useState(1)
   const [totalLogs, setTotalLogs] = useState(0)
   const [actionFilter, setActionFilter] = useState('')
   const [actorFilter, setActorFilter] = useState('')
   const [caseFilter, setCaseFilter] = useState('')
+
+  const fetchRegistrations = useCallback(async () => {
+    setRegsLoading(true); setRegsError('')
+    try {
+      const [regsData, reqsData] = await Promise.all([
+        adminGetProviderRegistrations(),
+        adminGetProviderRequests(),
+      ])
+      setProviderRegs(regsData.registrations || [])
+      setProviderRequests(reqsData.requests || [])
+    } catch (e) {
+      setRegsError(e instanceof Error ? e.message : 'Could not load registrations.')
+    } finally { setRegsLoading(false) }
+  }, [])
 
   useEffect(() => {
     // Gate ALL admin data fetches on confirmed admin access, so a non-admin
@@ -110,8 +150,10 @@ export default function AdminPage() {
       fetchUsers()
     } else if (activeTab === 'system') {
       fetchSystemInfo()
+    } else if (activeTab === 'registrations') {
+      fetchRegistrations()
     }
-  }, [isAdmin, activeTab, page, actionFilter, actorFilter, caseFilter])
+  }, [isAdmin, activeTab, page, actionFilter, actorFilter, caseFilter, fetchRegistrations])
 
   const fetchLogs = async () => {
     setLoading(true)
@@ -243,6 +285,7 @@ export default function AdminPage() {
               onClick={() => {
                 if (activeTab === 'audit') fetchLogs()
                 else if (activeTab === 'users') fetchUsers()
+                else if (activeTab === 'registrations') fetchRegistrations()
                 else fetchSystemInfo()
               }}
               className="flex items-center gap-2 px-3 py-2 text-sm bg-white border border-slate-200 rounded-lg text-slate-700 hover:bg-slate-50 transition-colors shadow-sm"
@@ -296,6 +339,22 @@ export default function AdminPage() {
             User & Role Management
           </button>
           <button
+            onClick={() => setActiveTab('registrations')}
+            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors whitespace-nowrap ${
+              activeTab === 'registrations'
+                ? 'border-pink-700 text-pink-700'
+                : 'border-transparent text-slate-500 hover:text-slate-900'
+            }`}
+          >
+            <ClipboardList className="w-4 h-4" />
+            Provider Registrations
+            {providerRegs.filter(r => r.status === 'PENDING_REVIEW').length > 0 && (
+              <span className="ml-1 bg-amber-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full">
+                {providerRegs.filter(r => r.status === 'PENDING_REVIEW').length}
+              </span>
+            )}
+          </button>
+                    <button
             onClick={() => setActiveTab('system')}
             className={`flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${
               activeTab === 'system'
@@ -513,6 +572,277 @@ export default function AdminPage() {
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3b: Provider Registrations */}
+        {activeTab === 'registrations' && (
+          <div className="space-y-6">
+            {regsError && (
+              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-sm">{regsError}</div>
+            )}
+
+            {/* Pending Registrations */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <ClipboardList className="w-5 h-5 text-pink-700" />
+                <h2 className="text-base font-bold text-slate-900">Provider Registration Requests</h2>
+                <span className="ml-auto text-xs text-slate-400">{providerRegs.length} total</span>
+              </div>
+              {regsLoading ? (
+                <div className="text-center py-8 text-slate-400 text-sm">Loading…</div>
+              ) : providerRegs.length === 0 ? (
+                <div className="text-center py-8 text-slate-400 text-sm">No registration requests yet.</div>
+              ) : (
+                <div className="space-y-4">
+                  {providerRegs.map(reg => (
+                    <div key={reg.registration_id} className="border border-slate-100 rounded-xl p-4">
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-bold text-slate-900 text-sm">{reg.unit_name}</div>
+                          <div className="text-xs text-slate-500 mt-0.5">
+                            {reg.provider_category}{reg.organization ? ` · ${reg.organization}` : ''}{reg.jurisdiction ? ` · ${reg.jurisdiction}` : ''}
+                          </div>
+                          {reg.contact && <div className="text-xs text-slate-400 mt-0.5">Contact: {reg.contact}</div>}
+                          {reg.auth_reference && <div className="text-xs text-slate-400 mt-0.5">Auth Ref: {reg.auth_reference}</div>}
+                          {reg.badge_number && <div className="text-xs text-slate-400 mt-0.5">Badge: {reg.badge_number}</div>}
+                          {reg.capabilities?.length > 0 && <div className="text-xs text-slate-400 mt-0.5">Capabilities: {reg.capabilities.join(', ')}</div>}
+                          {reg.notes && <div className="text-xs text-slate-400 mt-0.5">Notes: {reg.notes}</div>}
+                          {reg.status === 'REJECTED' && reg.rejection_reason && (
+                            <div className="mt-2 text-xs text-red-700 bg-red-50 px-2 py-1 rounded">Rejected: {reg.rejection_reason}</div>
+                          )}
+                          {reg.status === 'APPROVED' && reg.live_provider && (
+                            <div className="mt-2 text-xs text-emerald-700 bg-emerald-50 px-2 py-1 rounded">
+                              Provider created · {reg.live_provider.provisioning_state}
+                              {reg.live_provider.verified ? ' · Verified' : ' · Awaiting verification'}
+                            </div>
+                          )}
+                          <div className="text-xs text-slate-300 mt-1">
+                            Submitted by: {reg.submitted_by} ({reg.submitted_by_role}) · {new Date(reg.submitted_at).toLocaleString()}
+                          </div>
+                        </div>
+                        <div className="flex flex-col items-end gap-2">
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                            reg.status === 'PENDING_REVIEW' ? 'bg-amber-100 text-amber-800' :
+                            reg.status === 'APPROVED' ? 'bg-emerald-100 text-emerald-800' :
+                            'bg-red-100 text-red-800'
+                          }`}>{reg.status}</span>
+                          {reg.status === 'PENDING_REVIEW' && (
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => { setApproveModal(reg) }}
+                                className="px-3 py-1 text-xs font-semibold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+                              >
+                                Approve
+                              </button>
+                              <button
+                                onClick={() => { setRejectModal(reg); setRejectReason('') }}
+                                className="px-3 py-1 text-xs font-semibold bg-red-600 text-white rounded-lg hover:bg-red-700"
+                              >
+                                Reject
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Action Requests (Suspension / Revocation) */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <UserCheck className="w-5 h-5 text-pink-700" />
+                <h2 className="text-base font-bold text-slate-900">Suspension &amp; Revocation Requests</h2>
+                <span className="ml-auto text-xs text-slate-400">{providerRequests.length} total</span>
+              </div>
+              {regsLoading ? (
+                <div className="text-center py-8 text-slate-400 text-sm">Loading…</div>
+              ) : providerRequests.length === 0 ? (
+                <div className="text-center py-8 text-slate-400 text-sm">No action requests pending.</div>
+              ) : (
+                <div className="space-y-4">
+                  {providerRequests.map(req => (
+                    <div key={req.request_id} className="border border-slate-100 rounded-xl p-4">
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-bold text-slate-900 text-sm">
+                            {req.request_type}: {req.display_label || req.responder_id}
+                          </div>
+                          {req.badge_number && <div className="text-xs text-slate-400">Badge: {req.badge_number}</div>}
+                          <div className="text-xs text-slate-500 mt-1">Reason: {req.reason}</div>
+                          <div className="text-xs text-slate-300 mt-1">
+                            Submitted by {req.submitted_by} · {new Date(req.submitted_at).toLocaleString()}
+                          </div>
+                          {req.review_notes && (
+                            <div className="mt-1 text-xs text-slate-500">Review notes: {req.review_notes}</div>
+                          )}
+                        </div>
+                        <div className="flex flex-col items-end gap-2">
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                            req.status === 'PENDING_REVIEW' ? 'bg-amber-100 text-amber-800' :
+                            req.status === 'APPROVED' ? 'bg-emerald-100 text-emerald-800' :
+                            'bg-red-100 text-red-800'
+                          }`}>{req.status}</span>
+                          {req.status === 'PENDING_REVIEW' && (
+                            <button
+                              onClick={() => { setReviewRequestModal(req); setReviewAction('approve'); setReviewNotes('') }}
+                              className="px-3 py-1 text-xs font-semibold bg-pink-700 text-white rounded-lg hover:bg-pink-800"
+                            >
+                              Review
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Modals */}
+        {approveModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
+              <div className="flex items-center gap-2 mb-3">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                <h3 className="font-bold text-slate-900">Approve Registration</h3>
+                <button onClick={() => setApproveModal(null)} className="ml-auto text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+              </div>
+              <p className="text-sm text-slate-600 mb-4">
+                Approve <strong>{approveModal.unit_name}</strong>? This will create an inert provider account and issue a one-time setup token.
+              </p>
+              {issuedToken && (
+                <div className="mb-4">
+                  <div className="text-xs font-semibold text-amber-700 mb-1">One-time setup token (copy now — not shown again):</div>
+                  <code className="block text-xs bg-slate-50 border border-slate-200 p-3 rounded-lg break-all">{issuedToken.token}</code>
+                </div>
+              )}
+              {!issuedToken && (
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setApproveModal(null)} className="px-4 py-2 text-sm border border-slate-200 rounded-lg">Cancel</button>
+                  <button
+                    disabled={regsActionBusy}
+                    onClick={async () => {
+                      setRegsActionBusy(true)
+                      try {
+                        const res = await adminApproveRegistration(approveModal.registration_id)
+                        setIssuedToken({ token: res.setup_token, unitName: approveModal.unit_name })
+                        fetchRegistrations()
+                      } catch (e) {
+                        setRegsError(e instanceof Error ? e.message : 'Approval failed.')
+                        setApproveModal(null)
+                      } finally { setRegsActionBusy(false) }
+                    }}
+                    className="px-4 py-2 text-sm font-semibold bg-emerald-600 text-white rounded-lg disabled:opacity-60"
+                  >
+                    {regsActionBusy ? 'Approving…' : 'Confirm Approval'}
+                  </button>
+                </div>
+              )}
+              {issuedToken && (
+                <div className="flex justify-end">
+                  <button onClick={() => { setApproveModal(null); setIssuedToken(null) }} className="px-4 py-2 text-sm font-semibold bg-emerald-600 text-white rounded-lg">Done</button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {rejectModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
+              <div className="flex items-center gap-2 mb-3">
+                <AlertTriangle className="w-5 h-5 text-red-600" />
+                <h3 className="font-bold text-slate-900">Reject Registration</h3>
+                <button onClick={() => setRejectModal(null)} className="ml-auto text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+              </div>
+              <p className="text-sm text-slate-600 mb-3">
+                Reject <strong>{rejectModal.unit_name}</strong>? Please provide a reason.
+              </p>
+              <textarea
+                value={rejectReason}
+                onChange={e => setRejectReason(e.target.value)}
+                rows={3}
+                placeholder="Rejection reason (required)…"
+                className="w-full text-sm border border-slate-200 rounded-lg p-3 mb-3 focus:ring-2 focus:ring-pink-500 focus:outline-none"
+              />
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setRejectModal(null)} className="px-4 py-2 text-sm border border-slate-200 rounded-lg">Cancel</button>
+                <button
+                  disabled={regsActionBusy || !rejectReason.trim()}
+                  onClick={async () => {
+                    setRegsActionBusy(true)
+                    try {
+                      await adminRejectRegistration(rejectModal.registration_id, rejectReason.trim())
+                      setRejectModal(null)
+                      fetchRegistrations()
+                    } catch (e) {
+                      setRegsError(e instanceof Error ? e.message : 'Rejection failed.')
+                      setRejectModal(null)
+                    } finally { setRegsActionBusy(false) }
+                  }}
+                  className="px-4 py-2 text-sm font-semibold bg-red-600 text-white rounded-lg disabled:opacity-60"
+                >
+                  {regsActionBusy ? 'Rejecting…' : 'Confirm Rejection'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {reviewRequestModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
+              <div className="flex items-center gap-2 mb-3">
+                <Shield className="w-5 h-5 text-pink-700" />
+                <h3 className="font-bold text-slate-900">Review Action Request</h3>
+                <button onClick={() => setReviewRequestModal(null)} className="ml-auto text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+              </div>
+              <p className="text-sm text-slate-600 mb-1">
+                <strong>{reviewRequestModal.request_type}</strong>: {reviewRequestModal.display_label || reviewRequestModal.responder_id}
+              </p>
+              <p className="text-xs text-slate-500 mb-3">Reason: {reviewRequestModal.reason}</p>
+              <div className="mb-3">
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Decision</label>
+                <select value={reviewAction} onChange={e => setReviewAction(e.target.value as 'approve' | 'reject')}
+                  className="w-full text-sm border border-slate-200 rounded-lg p-2 focus:ring-2 focus:ring-pink-500 focus:outline-none">
+                  <option value="approve">Approve — execute the {reviewRequestModal.request_type.toLowerCase()}</option>
+                  <option value="reject">Reject — deny this request</option>
+                </select>
+              </div>
+              <textarea
+                value={reviewNotes}
+                onChange={e => setReviewNotes(e.target.value)}
+                rows={2}
+                placeholder="Review notes (optional)…"
+                className="w-full text-sm border border-slate-200 rounded-lg p-3 mb-3 focus:ring-2 focus:ring-pink-500 focus:outline-none"
+              />
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setReviewRequestModal(null)} className="px-4 py-2 text-sm border border-slate-200 rounded-lg">Cancel</button>
+                <button
+                  disabled={regsActionBusy}
+                  onClick={async () => {
+                    setRegsActionBusy(true)
+                    try {
+                      await adminReviewProviderRequest(reviewRequestModal.request_id, reviewAction, reviewNotes.trim() || undefined)
+                      setReviewRequestModal(null)
+                      fetchRegistrations()
+                    } catch (e) {
+                      setRegsError(e instanceof Error ? e.message : 'Review failed.')
+                      setReviewRequestModal(null)
+                    } finally { setRegsActionBusy(false) }
+                  }}
+                  className={`px-4 py-2 text-sm font-semibold text-white rounded-lg disabled:opacity-60 ${reviewAction === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-red-600 hover:bg-red-700'}`}
+                >
+                  {regsActionBusy ? 'Submitting…' : reviewAction === 'approve' ? 'Approve' : 'Reject'}
+                </button>
+              </div>
             </div>
           </div>
         )}

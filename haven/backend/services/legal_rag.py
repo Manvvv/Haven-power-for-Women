@@ -330,12 +330,14 @@ def retrieve(question: str, k: int = 5, min_score: float = None) -> dict:
     Returns {passages, mode, degraded, semantic_available}.
     """
     min_score = MIN_SCORE if min_score is None else min_score
-    coll = legal_docs()
-    if coll is None:
-        return {"passages": [], "mode": "none", "degraded": True, "semantic_available": False}
-
     einfo = embedding_info()
     semantic_available = bool(einfo.get("semantic_search_available"))
+
+    coll = legal_docs()
+    if coll is None:
+        mode = "keyword_fallback" if not semantic_available else "none"
+        return {"passages": [], "mode": mode, "degraded": True, "semantic_available": semantic_available}
+
     semantic_passages = []
 
     if semantic_available:

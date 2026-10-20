@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import logging
 import secrets
+import unicodedata
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 
@@ -377,6 +378,30 @@ def require_admin(current_user: AuthUser = Depends(get_current_user)) -> AuthUse
     return current_user
 
 
+def require_responder(current_user: AuthUser = Depends(get_current_user)) -> AuthUser:
+    """FastAPI dependency requiring the field-responder role (Rapid Response Network).
+
+    Additive and intentionally STRICT: it accepts ONLY role=="responder". A
+    responder is a distinct identity provisioned in the `responders` store and
+    approved through the admin workflow; it is deliberately NOT one of the
+    authority/admin roles, so a responder can neither view the authority case
+    queue (require_authority excludes "responder") nor reach admin endpoints.
+    Conversely an authority/admin token is NOT accepted here — responder actions
+    (accept/decline/en-route/location) must come from the assigned responder's own
+    verified identity, never from a dispatcher impersonating a unit.
+
+    Like every elevated role, "responder" can only originate from a Haven-internal
+    HS256 token (see decode_token): an unverifiable or Clerk token is forced to
+    "user", so this dependency can never be satisfied by a spoofed client claim.
+    """
+    if current_user.role != "responder":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: Responder credentials required for this action.",
+        )
+    return current_user
+
+
 _ELEVATED_ROLES = ("admin", "authority", "police", "protection_officer")
 
 
@@ -455,7 +480,16 @@ def verify_password(password: str, stored_hash: str, salt_hex: str) -> bool:
 # ─── Salted Safe-Word & Password Hashing (PBKDF2) ─────────
 
 def normalize_text(text: str) -> str:
-    """Normalize text for voice matching."""
+    """Canonical normalization for voice matching.
+
+    Applied identically during safe-word save AND verify so the PBKDF2
+    hashes are comparable.  Steps:
+      1. NFKD Unicode normalization (handles accents, Devanagari variants, etc.)
+      2. Case folding
+      3. Strip non-word / non-whitespace characters (punctuation)
+      4. Collapse / trim whitespace
+    """
+    text = unicodedata.normalize('NFKD', text)
     normalized = re.sub(r'[^\w\s]', '', text.lower()).strip()
     return ' '.join(normalized.split())
 
@@ -501,6 +535,54 @@ def verify_safe_word(spoken_phrase: str, stored_hash: str, salt_hex: str) -> boo
         dklen=32
     ).hex()
     return hmac.compare_digest(calculated, stored_hash)
+
+
+def verify_safe_word_in_transcript(
+    transcript: str,
+    stored_hash: str,
+    salt_hex: str,
+    *,
+    max_words: int = 15,
+    max_ngram_len: int = 6,
+) -> bool:
+    """Try to find the safe word within a longer speech transcript.
+
+    Used when the frontend sends the raw spoken text (what the user actually
+    said) rather than an extracted candidate.  Each contiguous n-gram window
+    of the normalized transcript is hashed with PBKDF2 and compared to the
+    stored hash.
+
+    Bounds (max_words × max_ngram_len triangle ≈ 75 PBKDF2 ops worst-case)
+    are chosen to keep latency acceptable for a rate-limited emergency
+    endpoint while covering realistic safe-phrase lengths (1-6 words) inside
+    a recent speech burst (last 15 words).
+
+    Returns True on the FIRST matching n-gram (short-circuits).
+    """
+    norm = normalize_text(transcript)
+    words = norm.split()
+    if not words:
+        return False
+    # Only inspect the tail of the transcript — the safe word was just spoken.
+    words = words[-max_words:]
+    try:
+        salt_bytes = bytes.fromhex(salt_hex)
+    except Exception:
+        return False
+
+    for length in range(1, min(max_ngram_len, len(words)) + 1):
+        for start in range(len(words) - length + 1):
+            candidate = ' '.join(words[start:start + length])
+            calculated = hashlib.pbkdf2_hmac(
+                'sha256',
+                candidate.encode('utf-8'),
+                salt_bytes,
+                100000,
+                dklen=32,
+            ).hex()
+            if hmac.compare_digest(calculated, stored_hash):
+                return True
+    return False
 
 
 # ─── AES-256-GCM Evidence Encryption ─────────────────────

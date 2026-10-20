@@ -2,7 +2,7 @@
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { UserButton, SignedIn, SignedOut } from '@clerk/nextjs'
-import { Shield, MessageCircle, Scale, Eye, ChevronRight, Heart, Mic } from 'lucide-react'
+import { Shield, MessageCircle, Scale, Eye, ChevronRight, Heart, Mic, Radio } from 'lucide-react'
 import { useLang, LanguageSelector } from '@/components/LanguageContext'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
 
@@ -22,6 +22,23 @@ export default function HomePage() {
             <span style={{ fontSize: '1.25rem', fontWeight: 700, color: '#be185d', fontFamily: 'Georgia, serif' }}>{t('appName')}</span>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {/* Responder portal — always visible, distinct from user / authority login */}
+            <Link href="/responder">
+              <button
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '7px 14px', fontSize: '0.78rem', fontWeight: 600,
+                  color: '#1d4ed8', background: '#eff6ff',
+                  border: '1px solid #bfdbfe', borderRadius: 8, cursor: 'pointer',
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = '#dbeafe' }}
+                onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = '#eff6ff' }}
+              >
+                <Radio size={14} />
+                Responder Sign In
+              </button>
+            </Link>
             <LanguageSelector compact />
             <SignedIn>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -67,6 +84,20 @@ export default function HomePage() {
           <button className="btn-secondary" onClick={() => navigate('/authority')} style={{ fontSize: 'clamp(0.85rem, 2vw, 1rem)', padding: 'clamp(12px,2vw,15px) clamp(24px,4vw,36px)' }}>
             {t('authorityDashboard')}
           </button>
+          {/* Responder portal — separate identity, separate login, blue to distinguish */}
+          <button
+            onClick={() => navigate('/responder')}
+            style={{
+              fontSize: 'clamp(0.85rem, 2vw, 1rem)', padding: 'clamp(12px,2vw,15px) clamp(24px,4vw,36px)',
+              background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: 10,
+              fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8,
+              transition: 'background 0.15s',
+            }}
+            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = '#1e40af' }}
+            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = '#1d4ed8' }}
+          >
+            <Radio size={18} /> Responder Portal
+          </button>
         </div>
 
         <p style={{ marginTop: 16, fontSize: '0.8rem', color: '#be185d', padding: '0 16px' }}>
@@ -78,11 +109,12 @@ export default function HomePage() {
       <section style={{ maxWidth: 1200, margin: '0 auto', padding: '20px 16px clamp(40px,6vw,80px)' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: 16 }}>
           {[
-            { icon: <Eye size={28} style={{ color: '#be185d' }} />, title: t('discreeSOS'), desc: t('discreSOSDesc'), href: '/sos', color: '#fce7f3' },
-            { icon: <Mic size={28} style={{ color: '#7c3aed' }} />, title: 'Voice SOS', desc: 'Set up a secret voice code to silently trigger emergency alerts', href: '/voice-sos', color: '#f5f0ff' },
-            { icon: <Heart size={28} style={{ color: '#db2777' }} />, title: t('mentalHealth'), desc: t('mentalHealthDesc'), href: '/therapy', color: '#fdf2f8' },
-            { icon: <Scale size={28} style={{ color: '#9d174d' }} />, title: t('legalGuidance'), desc: t('legalGuidanceDesc'), href: '/legal', color: '#f5f0ff' },
-            { icon: <MessageCircle size={28} style={{ color: '#be185d' }} />, title: t('authorityDB'), desc: t('authorityDBDesc'), href: '/authority', color: '#fce7f3' },
+            { icon: <Eye size={28} style={{ color: '#be185d' }} />, title: t('discreeSOS'), desc: t('discreSOSDesc'), href: '/sos', color: '#fce7f3', accent: '#be185d' },
+            { icon: <Mic size={28} style={{ color: '#7c3aed' }} />, title: 'Voice SOS', desc: 'Set up a secret voice code to silently trigger emergency alerts', href: '/voice-sos', color: '#f5f0ff', accent: '#7c3aed' },
+            { icon: <Heart size={28} style={{ color: '#db2777' }} />, title: t('mentalHealth'), desc: t('mentalHealthDesc'), href: '/therapy', color: '#fdf2f8', accent: '#db2777' },
+            { icon: <Scale size={28} style={{ color: '#9d174d' }} />, title: t('legalGuidance'), desc: t('legalGuidanceDesc'), href: '/legal', color: '#f5f0ff', accent: '#9d174d' },
+            { icon: <MessageCircle size={28} style={{ color: '#be185d' }} />, title: t('authorityDB'), desc: t('authorityDBDesc'), href: '/authority', color: '#fce7f3', accent: '#be185d' },
+            { icon: <Radio size={28} style={{ color: '#1d4ed8' }} />, title: 'Rapid Responder', desc: 'Field responders: sign in to receive emergency dispatch requests and stream your live location to active incidents.', href: '/responder', color: '#eff6ff', accent: '#1d4ed8' },
           ].map((f, i) => (
             <div key={i} onClick={() => navigate(f.href)} className="glass-card"
               style={{ padding: 'clamp(20px,4vw,32px)', cursor: 'pointer', transition: 'all 0.3s', background: f.color, height: '100%' }}
@@ -92,7 +124,7 @@ export default function HomePage() {
               <div style={{ marginBottom: 14 }}>{f.icon}</div>
               <h3 style={{ fontSize: 'clamp(1rem, 2.5vw, 1.2rem)', fontWeight: 700, marginBottom: 10, color: '#1a0a12' }}>{f.title}</h3>
               <p style={{ color: '#8b6b7d', lineHeight: 1.6, fontSize: 'clamp(0.82rem, 2vw, 0.9rem)' }}>{f.desc}</p>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 16, color: '#be185d', fontWeight: 600, fontSize: '0.82rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 16, color: f.accent, fontWeight: 600, fontSize: '0.82rem' }}>
                 <span>{t('learnMore')}</span><ChevronRight size={13} />
               </div>
             </div>

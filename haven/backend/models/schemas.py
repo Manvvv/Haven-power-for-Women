@@ -87,6 +87,63 @@ class DiscreetDispatchModel(BaseModel):
     dispatcher_notes: str = ""
     silent_approach: bool = True
 
+
+# ─────────── Rapid Response Network (human-approved responder dispatch) ───────────
+# These power the /dispatch/* and /responder/* endpoints. HAVEN never dispatches
+# autonomously: a dispatch is created ONLY by an authenticated authority action
+# (ResponderDispatchCreateModel below). Responder selection is deterministic and
+# server-side; no client field decides eligibility or assignment.
+
+class ResponderLoginModel(BaseModel):
+    """Field-responder login. Identity (responder_id / label / role) is read from
+    the server-side responder record, NEVER from these client-supplied fields."""
+    password: str
+    badge_number: Optional[str] = None
+
+
+class ResponderDispatchCreateModel(BaseModel):
+    """Authority-initiated (human-approved) dispatch request for a received case.
+
+    The incident location is NOT accepted from the client — it is read on the
+    server from the case's live GPS fix, so a dispatcher cannot redirect a unit to
+    an arbitrary coordinate. required_capability/radius_m only narrow eligibility.
+    """
+    case_id: str = Field(..., max_length=100)
+    required_capability: Optional[str] = Field(None, max_length=40)
+    radius_m: Optional[int] = Field(None, ge=100, le=100_000)
+    notes: Optional[str] = Field("", max_length=500)
+
+
+class ResponderDutyModel(BaseModel):
+    """Responder declares ON_DUTY / OFF_DUTY. Going ON_DUTY is the explicit consent
+    point for operational location sharing; OFF_DUTY stops it."""
+    duty: str = Field(..., max_length=20)  # ON_DUTY | OFF_DUTY
+    location_sharing_consent: Optional[bool] = None
+
+
+class ResponderStatusModel(BaseModel):
+    """Responder sets their OWN availability. BUSY is server-controlled (set only by
+    an accepted assignment) and is rejected here, so a unit cannot fake being busy
+    to dodge offers while still appearing on-duty."""
+    status: str = Field(..., max_length=20)  # AVAILABLE | OFFLINE | UNAVAILABLE
+
+
+class ResponderLocationModel(BaseModel):
+    """A responder's own live location fix. Validated like victim telemetry; never
+    fabricated. Stored as GeoJSON [lng, lat] for 2dsphere eligibility and, while
+    assigned, broadcast to the dispatch room."""
+    latitude: float
+    longitude: float
+    accuracy: Optional[float] = None
+    timestamp: Optional[str] = ""
+
+
+class ResponderAdminUpdateModel(BaseModel):
+    """Admin-only responder management (approve/verify/activate). Mirrors the
+    existing trusted admin role-management workflow."""
+    verified: Optional[bool] = None
+    active: Optional[bool] = None
+
 class RiskAssessmentModel(BaseModel):
     severity: str
     risk_score: int

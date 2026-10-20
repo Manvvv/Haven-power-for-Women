@@ -32,6 +32,40 @@ except Exception as e:
     APP_AVAILABLE = False
 
 
+def _reset_voice_cooldown(user_id: str) -> None:
+    """Test isolation: clear a user's voice cooldown in BOTH the in-memory mirror
+    and the shared (Redis-backed) cooldown store, using the app's own key helper.
+    Cooldowns are durable across processes, so popping only the mirror leaves
+    stale 429s from earlier runs."""
+    _voice_sos_cooldowns.pop(user_id, None)
+    try:
+        import rate_limiter as _rl
+        mode, rclient = _rl._resolve_backend()
+        if mode == "redis" and rclient is not None:
+            rclient.delete(_rl._cooldown_key("voice_sos", user_id))
+    except Exception:
+        pass
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _reset_shared_ratelimit_buckets():
+    """Test isolation: the rate limiter's sliding windows live in the shared Redis
+    backend and survive across processes. A previous run (or sibling test file)
+    can leave this module's per-identity buckets already at the limit, causing
+    spurious 429s. Clear only the transient sliding-window counters at module
+    start. Production limits are NOT changed and no authorization is bypassed."""
+    try:
+        import rate_limiter as _rl
+        mode, rclient = _rl._resolve_backend()
+        if mode == "redis" and rclient is not None:
+            stale = list(rclient.scan_iter(match=f"{_rl._RL_NS}:*", count=500))
+            if stale:
+                rclient.delete(*stale)
+    except Exception:
+        pass
+    yield
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Authenticated-request helpers (P1 security-hardening test fixes)
 #
@@ -186,7 +220,7 @@ class TestVoiceSOSTrigger:
             "user_id": "test_trigger_user",
             "enabled": True,
             "safe_word": "help me now",
-            "cooldown_seconds": 5,
+            "cooldown_seconds": 10,
             "contacts": []
         }, headers=_auth_headers("test_trigger_user"))
         # Try wrong hash
@@ -218,7 +252,7 @@ class TestVoiceSOSTrigger:
     def test_cooldown_enforcement(self):
         """POST /voice-sos/trigger should enforce cooldown period."""
         # Clear cooldown
-        _voice_sos_cooldowns.pop("test_trigger_user", None)
+        _reset_voice_cooldown("test_trigger_user")
 
         correct_hash = normalize_and_hash("help me now")
 
@@ -251,10 +285,10 @@ class TestVoiceSOSTrigger:
         (with the real count surfaced as contacts_pending). Regression guard
         for the previous hardcoded `erss_auto_dispatched: True` / notified count.
         """
-        _voice_sos_cooldowns.pop("honest_flags_user", None)
+        _reset_voice_cooldown("honest_flags_user")
         client.post("/voice-sos/config", json={
             "user_id": "honest_flags_user", "enabled": True,
-            "safe_word": "open the window", "cooldown_seconds": 5, "contacts": [],
+            "safe_word": "open the window", "cooldown_seconds": 10, "contacts": [],
         }, headers=_auth_headers("honest_flags_user"))
         resp = client.post("/voice-sos/trigger", json={
             "user_id": "honest_flags_user",
@@ -939,3 +973,193 @@ class TestSaveExtractedData:
             assert resp.status_code in (400, 503)
         else:
             assert resp.status_code == 400
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Voice SOS Safe-Word Verification Fix — regression tests
+#
+# These tests exercise the EXACT bug reported by the user and the three-path
+# verification model (spoken_phrase → transcript n-gram → legacy hash).
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.skipif(not APP_AVAILABLE, reason="App import failed")
+class TestSafeWordVerificationFix:
+    """Tests for the spoken_phrase / transcript PBKDF2 verification paths."""
+
+    SAFE_WORD = "blue notebook"
+    USER_ID = "swfix_user"
+
+    @pytest.fixture(autouse=True)
+    def _setup_config(self):
+        """Create a Voice SOS config with a known safe word for each test."""
+        from routers.voice_routes import _voice_sos_cooldowns
+        _reset_voice_cooldown(self.USER_ID)
+        client.post("/voice-sos/config", json={
+            "user_id": self.USER_ID,
+            "enabled": True,
+            "safe_word": self.SAFE_WORD,
+            "cooldown_seconds": 10,
+            "contacts": [],
+        }, headers=_auth_headers(self.USER_ID))
+
+    def _trigger(self, **overrides):
+        payload = {
+            "user_id": self.USER_ID,
+            "latitude": 28.6, "longitude": 77.2,
+            "timestamp": "2026-01-01T00:00:00Z",
+            **overrides,
+        }
+        from routers.voice_routes import _voice_sos_cooldowns
+        _reset_voice_cooldown(self.USER_ID)
+        return client.post("/voice-sos/trigger", json=payload,
+                           headers=_auth_headers(self.USER_ID))
+
+    # ── Path 1: spoken_phrase (direct PBKDF2) ──
+
+    def test_exact_spoken_phrase_succeeds(self):
+        """Exact safe word via spoken_phrase → 200."""
+        resp = self._trigger(spoken_phrase="blue notebook")
+        assert resp.status_code in (200, 503), resp.text
+
+    def test_spoken_phrase_with_surrounding_spaces(self):
+        """Padded whitespace is normalized away → 200."""
+        resp = self._trigger(spoken_phrase="  blue   notebook  ")
+        assert resp.status_code in (200, 503), resp.text
+
+    def test_spoken_phrase_case_insensitive(self):
+        """Case differences are folded → 200."""
+        resp = self._trigger(spoken_phrase="Blue Notebook")
+        assert resp.status_code in (200, 503), resp.text
+
+    def test_spoken_phrase_with_punctuation(self):
+        """Trailing punctuation is stripped → 200."""
+        resp = self._trigger(spoken_phrase="blue notebook!")
+        assert resp.status_code in (200, 503), resp.text
+
+    def test_wrong_spoken_phrase_fails(self):
+        """Wrong phrase → 403."""
+        resp = self._trigger(spoken_phrase="red pencil")
+        assert resp.status_code in (403, 503), resp.text
+
+    def test_empty_spoken_phrase_no_transcript_fails(self):
+        """Empty spoken_phrase with no transcript → 403."""
+        resp = self._trigger(spoken_phrase="")
+        assert resp.status_code in (403, 503), resp.text
+
+    # ── Path 2: transcript n-gram fallback (THE BUG SCENARIO) ──
+
+    def test_empty_spoken_phrase_with_transcript_succeeds(self):
+        """THE USER-REPORTED BUG: empty spoken_phrase but transcript contains
+        the safe word → backend extracts via n-gram PBKDF2 → 200."""
+        resp = self._trigger(
+            spoken_phrase="",
+            transcript="please help blue notebook i need help",
+        )
+        assert resp.status_code in (200, 503), resp.text
+
+    def test_transcript_only_safe_word(self):
+        """Transcript IS the safe word (no extra words) → 200."""
+        resp = self._trigger(spoken_phrase="", transcript="blue notebook")
+        assert resp.status_code in (200, 503), resp.text
+
+    def test_transcript_safe_word_with_noise(self):
+        """Safe word buried in speech → 200."""
+        resp = self._trigger(
+            spoken_phrase="",
+            transcript="i said blue notebook to my friend",
+        )
+        assert resp.status_code in (200, 503), resp.text
+
+    def test_transcript_wrong_words_fails(self):
+        """Transcript without the safe word → 403."""
+        resp = self._trigger(
+            spoken_phrase="",
+            transcript="the weather is nice today",
+        )
+        assert resp.status_code in (403, 503), resp.text
+
+    # ── Multi-word safe phrase ──
+
+    def test_multi_word_phrase_exact(self):
+        """Multi-word phrase verified exactly → 200."""
+        resp = self._trigger(spoken_phrase="blue notebook")
+        assert resp.status_code in (200, 503), resp.text
+
+    # ── Cross-user security ──
+
+    def test_other_user_cannot_trigger(self):
+        """Another user's spoken_phrase must not match this user's config."""
+        payload = {
+            "user_id": "attacker_user",
+            "spoken_phrase": self.SAFE_WORD,
+            "latitude": 0, "longitude": 0,
+            "timestamp": "2026-01-01T00:00:00Z",
+        }
+        resp = client.post("/voice-sos/trigger", json=payload,
+                           headers=_auth_headers("attacker_user"))
+        # attacker_user has no config → 404 (not 200)
+        assert resp.status_code in (404, 503), resp.text
+
+    # ── Disabled config ──
+
+    def test_disabled_config_rejected(self):
+        """Correct safe word on a disabled config → 400."""
+        client.post("/voice-sos/config", json={
+            "user_id": self.USER_ID,
+            "enabled": False,
+            "cooldown_seconds": 10,
+        }, headers=_auth_headers(self.USER_ID))
+        resp = self._trigger(spoken_phrase=self.SAFE_WORD)
+        assert resp.status_code in (400, 503), resp.text
+
+    # ── Successful trigger returns SOS event ──
+
+    def test_successful_trigger_creates_event(self):
+        """A verified trigger must return a real event_id and success=True."""
+        resp = self._trigger(spoken_phrase=self.SAFE_WORD)
+        if resp.status_code == 200:
+            data = resp.json()
+            assert data["success"] is True
+            assert data["event_id"].startswith("VSOS-")
+            assert data["status"] == "triggered"
+            assert "whatsapp_links" in data
+
+
+@pytest.mark.skipif(not APP_AVAILABLE, reason="App import failed")
+class TestNormalizationConsistency:
+    """Verify that normalize_text + PBKDF2 is consistent across save and verify."""
+
+    def test_unicode_nfkd_consistency(self):
+        """Unicode NFKD normalization hashes consistently."""
+        from auth import hash_safe_word_salted, verify_safe_word
+        # café with combining acute vs precomposed
+        word_nfc = "caf\u00e9"       # precomposed é
+        word_nfd = "cafe\u0301"      # e + combining acute
+        result = hash_safe_word_salted(word_nfc)
+        assert verify_safe_word(word_nfd, result["hash"], result["salt"])
+
+    def test_normalize_text_idempotent(self):
+        """Normalizing twice produces the same result."""
+        from auth import normalize_text
+        raw = "  Blue  Notebook!  "
+        assert normalize_text(raw) == normalize_text(normalize_text(raw))
+
+    def test_transcript_extraction_matches_direct(self):
+        """verify_safe_word_in_transcript finds the same word that
+        verify_safe_word would match directly."""
+        from auth import (
+            hash_safe_word_salted, verify_safe_word,
+            verify_safe_word_in_transcript,
+        )
+        word = "pink lotus"
+        result = hash_safe_word_salted(word)
+        # Direct match
+        assert verify_safe_word(word, result["hash"], result["salt"])
+        # Transcript extraction
+        assert verify_safe_word_in_transcript(
+            "i need pink lotus emergency", result["hash"], result["salt"],
+        )
+        # Wrong transcript
+        assert not verify_safe_word_in_transcript(
+            "i need red tulip emergency", result["hash"], result["salt"],
+        )

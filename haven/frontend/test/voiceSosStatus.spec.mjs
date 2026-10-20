@@ -60,13 +60,13 @@ check('blocked mic beats a generic error', deriveVoiceStatus({ ...base, micPermi
 check('a surfaced error beats quiet listening', deriveVoiceStatus({ ...base, hasError: true, isListening: true }) === 'failed')
 
 // every derivable status has presentation metadata (label/tone/live)
-const ALL = ['unsupported','processing','triggered','cooldown','permission_denied','failed','listening','idle']
-check('VOICE_STATUS_META covers all 8 states with a non-empty label',
+const ALL = ['unsupported','processing','verifying','triggered','cooldown','permission_denied','location_denied','backend_unavailable','failed','listening','idle']
+check('VOICE_STATUS_META covers all 11 states with a non-empty label',
       ALL.every(s => VOICE_STATUS_META[s] && typeof VOICE_STATUS_META[s].label === 'string' && VOICE_STATUS_META[s].label.length > 0))
 check('VOICE_STATUS_META tones are from the known set',
       ALL.every(s => ['danger','success','warning','info','muted'].includes(VOICE_STATUS_META[s].tone)))
-check('active states (processing/triggered/listening) are marked live for a11y',
-      VOICE_STATUS_META.processing.live && VOICE_STATUS_META.triggered.live && VOICE_STATUS_META.listening.live)
+check('active states (processing/verifying/triggered/listening) are marked live for a11y',
+      VOICE_STATUS_META.processing.live && VOICE_STATUS_META.verifying.live && VOICE_STATUS_META.triggered.live && VOICE_STATUS_META.listening.live)
 
 // ── mapRecognitionError: classified, never swallowed, never a transcript ─────
 const TRANSCRIPT = 'help me please secret safe word'

@@ -19,4 +19,8 @@ cryptography>=43.0.0
 # Install to enable the shared Redis backend (see REDIS_* in .env.example).
 redis>=5.0.0
 
+# Optional-but-supported: Web Push for responder emergency offers (VAPID). Without
+# it, push reports NOT_CONFIGURED and the in-app offer remains the primary channel.
+pywebpush>=2.0.0
+
 

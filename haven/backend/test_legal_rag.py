@@ -42,6 +42,20 @@ def _fake_call_groq(messages, *a, **k):
 
 _fake_ai.get_embedding = _fake_get_embedding
 _fake_ai.call_groq = _fake_call_groq
+_fake_ai.call_gemini = lambda *a, **k: ""
+_fake_ai.summarize_case = lambda *a, **k: {"summary": ""}
+_fake_ai.classify_risk = lambda *a, **k: {"severity": "LOW", "risk_score": 10, "indicators": [], "confidence": 0.8, "is_demo_mode": True}
+_fake_ai.detect_emergency_intent = lambda *a, **k: {"intent": "general", "is_emergency": False}
+
+try:
+    import importlib
+    _real_ai = importlib.import_module("services.ai_service")
+    for attr in dir(_real_ai):
+        if not attr.startswith("__") and not hasattr(_fake_ai, attr):
+            setattr(_fake_ai, attr, getattr(_real_ai, attr))
+except Exception:
+    pass
+
 sys.modules["services.ai_service"] = _fake_ai
 
 from services import legal_corpus, legal_triage, legal_rag  # noqa: E402

@@ -14,17 +14,24 @@ from auth import (
     require_self_or_authority,
     hash_safe_word_salted,
     verify_safe_word,
+    verify_safe_word_in_transcript,
 )
 from models.schemas import VoiceSOSConfigModel, VoiceSOSTriggerModel, VoiceAnalyzeModel
-from services.db import (
-    voice_sos_config_collection,
-    trusted_contacts_collection,
-    sos_events_collection,
-    sos_collection,
-    serialize_doc,
-)
+from services.db import get_collection, serialize_doc
+
+
+def _live(name: str):
+    """Resolve a Mongo collection on EVERY use.
+
+    Import-time handles (services.db module constants) were captured once and stayed
+    None for the whole process if the database was unavailable at import, causing
+    permanent 503s. get_collection() re-checks the connection each time and returns
+    None only while the database is genuinely unreachable.
+    """
+    return get_collection(name)
 from rate_limiter import rate_limit_dependency, cooldown_remaining, cooldown_set
 from services.audit_service import log_audit
+from services.incident_location import canonical_coord_fields
 from services.contact_validation import (
     MAX_TRUSTED_CONTACTS,
     normalize_phone,
@@ -110,12 +117,12 @@ def voice_sos_save_config(
     Requires authentication; the config always belongs to the verified caller
     (a body user_id is never trusted for write targeting).
     """
-    if voice_sos_config_collection is None:
+    if _live('voice_sos_config') is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
     target_user_id = current_user.user_id
 
-    existing = voice_sos_config_collection.find_one({"user_id": target_user_id})
+    existing = _live('voice_sos_config').find_one({"user_id": target_user_id})
 
     # A safe word is REQUIRED to create a config, but may be omitted when updating
     # an existing one (e.g. toggling `enabled` or editing contacts) — the stored
@@ -140,17 +147,17 @@ def voice_sos_save_config(
         set_fields["safe_word_hash"] = hash_result["hash"]
         set_fields["safe_word_salt"] = hash_result["salt"]
 
-    voice_sos_config_collection.update_one(
+    _live('voice_sos_config').update_one(
         {"user_id": target_user_id},
         {"$set": set_fields, "$setOnInsert": {"created_at": datetime.utcnow()}},
         upsert=True,
     )
 
     # Save trusted contacts
-    if config.contacts and trusted_contacts_collection is not None:
-        trusted_contacts_collection.delete_many({"user_id": target_user_id})
+    if config.contacts and _live('trusted_contacts') is not None:
+        _live('trusted_contacts').delete_many({"user_id": target_user_id})
         for c in config.contacts:
-            trusted_contacts_collection.insert_one({
+            _live('trusted_contacts').insert_one({
                 "user_id": target_user_id,
                 "contact_id": f"CONTACT-{int(time.time())}-{secrets.token_hex(2)}",
                 "name": c.name,
@@ -173,16 +180,16 @@ def voice_sos_get_config(
     Requires authentication; only the owner (or an authority/admin) may read.
     """
     require_self_or_authority(user_id, current_user)
-    if voice_sos_config_collection is None:
+    if _live('voice_sos_config') is None:
         return {"configured": False}
 
-    cfg = voice_sos_config_collection.find_one({"user_id": user_id}, {"_id": 0})
+    cfg = _live('voice_sos_config').find_one({"user_id": user_id}, {"_id": 0})
     if not cfg:
         return {"configured": False}
 
     contacts = []
-    if trusted_contacts_collection is not None:
-        contacts = list(trusted_contacts_collection.find(
+    if _live('trusted_contacts') is not None:
+        contacts = list(_live('trusted_contacts').find(
             {"user_id": user_id}, {"_id": 0}
         ))
 
@@ -206,7 +213,7 @@ def voice_sos_trigger(
     Trigger a REAL Voice SOS emergency.
     Validates safe word with stored PBKDF2 salt, enforces cooldown and creates emergency record.
     """
-    if voice_sos_config_collection is None or sos_events_collection is None:
+    if _live('voice_sos_config') is None or _live('sos_events') is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
     # Emergency initiation may be anonymous (documented), but an AUTHENTICATED
@@ -215,7 +222,7 @@ def voice_sos_trigger(
     # below is the authorization proof for the anonymous path.
     target_user_id = current_user.user_id if current_user else trigger.user_id
 
-    cfg = voice_sos_config_collection.find_one({"user_id": target_user_id})
+    cfg = _live('voice_sos_config').find_one({"user_id": target_user_id})
     if not cfg:
         raise HTTPException(status_code=404, detail="Voice SOS not configured")
     if not cfg.get("enabled"):
@@ -226,10 +233,25 @@ def voice_sos_trigger(
     stored_salt = cfg.get("safe_word_salt", "")
 
     matched = False
+
+    # Path 1: Direct spoken_phrase PBKDF2 verification (cheapest — 1 hash op).
+    # The frontend extracts the candidate phrase from the speech transcript and
+    # sends it here.
     if trigger.spoken_phrase and stored_salt:
         matched = verify_safe_word(trigger.spoken_phrase, stored_hash, stored_salt)
-    elif trigger.hashed_safe_word:
-        # Legacy/direct hash check fallback with constant-time comparison
+
+    # Path 2: N-gram extraction from the raw speech transcript.
+    # After page reload the frontend may not have the plaintext safe word in
+    # memory, so it sends the actual speech transcript.  The backend scans
+    # contiguous n-gram windows with PBKDF2 to find the safe word.  Bounded to
+    # prevent DoS (see verify_safe_word_in_transcript).
+    if not matched and trigger.transcript and stored_salt:
+        matched = verify_safe_word_in_transcript(
+            trigger.transcript, stored_hash, stored_salt,
+        )
+
+    # Path 3: Legacy/direct hash check fallback with constant-time comparison
+    if not matched and trigger.hashed_safe_word:
         matched = hmac.compare_digest(trigger.hashed_safe_word, stored_hash)
 
     if not matched:
@@ -248,8 +270,8 @@ def voice_sos_trigger(
     alert_message = format_emergency_alert(event_id, ts, trigger.latitude, trigger.longitude)
 
     contacts = []
-    if trusted_contacts_collection is not None:
-        contacts = list(trusted_contacts_collection.find(
+    if _live('trusted_contacts') is not None:
+        contacts = list(_live('trusted_contacts').find(
             {"user_id": target_user_id}, {"_id": 0}
         ))
 
@@ -277,10 +299,10 @@ def voice_sos_trigger(
             "severity": trigger.severity,
             "risk_score": trigger.risk_score,
         }
-    sos_events_collection.insert_one(event_doc)
+    _live('sos_events').insert_one(event_doc)
 
     # Save to sos_cases so it appears in authority dashboard
-    if sos_collection is not None:
+    if _live('sos_cases') is not None:
         case_doc = {
             "case_id": event_id,
             "user_id": target_user_id,
@@ -303,6 +325,11 @@ def voice_sos_trigger(
             "created_at": datetime.utcnow(),
             "has_evidence": False,
         }
+        # Canonical numeric fix on the CASE row (not only the human-readable
+        # string above), so the Rapid Response Network resolver and the authority
+        # map read the same coordinates the card shows. Empty {} when no valid
+        # fix — never fabricated.
+        case_doc.update(canonical_coord_fields(trigger.latitude, trigger.longitude))
         if trigger.transcript or trigger.intent or trigger.severity or trigger.risk_score is not None:
             case_doc["voice_analysis"] = {
                 "transcript": (trigger.transcript or "")[:2000],
@@ -310,7 +337,7 @@ def voice_sos_trigger(
                 "ai_severity": trigger.severity,
                 "risk_score": trigger.risk_score,
             }
-        sos_collection.insert_one(case_doc)
+        _live('sos_cases').insert_one(case_doc)
 
     # Audit the emergency creation. Minimal, non-sensitive metadata only —
     # NEVER the safe word, transcript, contact numbers, or GPS coordinates.
@@ -379,9 +406,9 @@ def voice_sos_analyze(
         risk = {"error": "risk classifier unavailable", "detail": str(e)[:120]}
 
     # Optionally attach analysis to an existing case (no raw audio persisted).
-    if body.case_id and sos_collection is not None:
+    if body.case_id and _live('sos_cases') is not None:
         try:
-            sos_collection.update_one(
+            _live('sos_cases').update_one(
                 {"case_id": body.case_id},
                 {"$set": {"voice_analysis": {
                     "transcript": transcript[:2000],
@@ -411,12 +438,12 @@ def voice_sos_test(
     current_user: Optional[AuthUser] = Depends(get_optional_user)
 ):
     """Test mode Voice SOS without triggering real police alert."""
-    if voice_sos_config_collection is None:
+    if _live('voice_sos_config') is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
     # Authenticated callers only test their OWN config; anonymous test path preserved.
     target_user_id = current_user.user_id if current_user else trigger.user_id
-    cfg = voice_sos_config_collection.find_one({"user_id": target_user_id})
+    cfg = _live('voice_sos_config').find_one({"user_id": target_user_id})
     if not cfg:
         raise HTTPException(status_code=404, detail="Voice SOS not configured")
 
@@ -426,14 +453,18 @@ def voice_sos_test(
     match = False
     if trigger.spoken_phrase and stored_salt:
         match = verify_safe_word(trigger.spoken_phrase, stored_hash, stored_salt)
-    elif trigger.hashed_safe_word:
+    if not match and trigger.transcript and stored_salt:
+        match = verify_safe_word_in_transcript(
+            trigger.transcript, stored_hash, stored_salt,
+        )
+    if not match and trigger.hashed_safe_word:
         match = hmac.compare_digest(trigger.hashed_safe_word, stored_hash)
 
     ts = trigger.timestamp or datetime.utcnow().isoformat()
     event_id = f"TEST-{int(time.time())}-{secrets.token_hex(4)}"
 
-    if sos_events_collection is not None:
-        sos_events_collection.insert_one({
+    if _live('sos_events') is not None:
+        _live('sos_events').insert_one({
             "event_id": event_id,
             "user_id": target_user_id,
             "trigger_type": "test",
@@ -467,10 +498,10 @@ def voice_sos_history(
 ):
     """Get Voice SOS event history for a user (owner or authority/admin only)."""
     require_self_or_authority(user_id, current_user)
-    if sos_events_collection is None:
+    if _live('sos_events') is None:
         return {"events": [], "total": 0}
 
-    events = list(sos_events_collection.find(
+    events = list(_live('sos_events').find(
         {"user_id": user_id},
         {"_id": 0, "safe_word_matched": 0}
     ).sort("created_at", -1).limit(20))
@@ -487,7 +518,7 @@ def save_trusted_contacts(
     current_user: AuthUser = Depends(get_current_user)
 ):
     """Save trusted contacts for the authenticated user (body user_id is ignored)."""
-    if trusted_contacts_collection is None:
+    if _live('trusted_contacts') is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
 
     # Identity comes only from the verified token.
@@ -497,7 +528,7 @@ def save_trusted_contacts(
     if len(contacts) > 5:
         raise HTTPException(status_code=400, detail="Maximum 5 contacts allowed")
 
-    trusted_contacts_collection.delete_many({"user_id": user_id})
+    _live('trusted_contacts').delete_many({"user_id": user_id})
     saved = []
     for c in contacts:
         doc = {
@@ -509,7 +540,7 @@ def save_trusted_contacts(
             "priority": int(c.get("priority", 1)),
             "created_at": datetime.utcnow(),
         }
-        trusted_contacts_collection.insert_one(doc)
+        _live('trusted_contacts').insert_one(doc)
         saved.append({"name": doc["name"], "contact_id": doc["contact_id"]})
 
     return {"success": True, "contacts_saved": len(saved), "contacts": saved}
@@ -522,10 +553,10 @@ def get_trusted_contacts(
 ):
     """Get trusted contacts for a user (owner or authority/admin only)."""
     require_self_or_authority(user_id, current_user)
-    if trusted_contacts_collection is None:
+    if _live('trusted_contacts') is None:
         return {"contacts": []}
 
-    contacts = list(trusted_contacts_collection.find(
+    contacts = list(_live('trusted_contacts').find(
         {"user_id": user_id}, {"_id": 0}
     ).sort("priority", 1))
 
@@ -555,7 +586,7 @@ def add_trusted_contact(
     the client never has to reconstruct it. Atomic single insert — a stale client
     cannot clobber contacts it did not know about.
     """
-    if trusted_contacts_collection is None:
+    if _live('trusted_contacts') is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
     user_id = current_user.user_id
 
@@ -569,7 +600,7 @@ def add_trusted_contact(
     if not valid_email(email):
         raise HTTPException(status_code=400, detail="Email address is not valid")
 
-    existing = list(trusted_contacts_collection.find({"user_id": user_id}, {"_id": 0}))
+    existing = list(_live('trusted_contacts').find({"user_id": user_id}, {"_id": 0}))
     if len(existing) >= MAX_TRUSTED_CONTACTS:
         raise HTTPException(status_code=400,
                             detail=f"Maximum {MAX_TRUSTED_CONTACTS} contacts allowed")
@@ -593,9 +624,9 @@ def add_trusted_contact(
         "priority": priority,
         "created_at": datetime.utcnow(),
     }
-    trusted_contacts_collection.insert_one(doc)
+    _live('trusted_contacts').insert_one(doc)
 
-    contacts = list(trusted_contacts_collection.find(
+    contacts = list(_live('trusted_contacts').find(
         {"user_id": user_id}, {"_id": 0}).sort("priority", 1))
     return {
         "success": True,
@@ -617,18 +648,18 @@ def delete_trusted_contact(
     contact_id simply matches nothing (404) and is never touched. Persists in
     MongoDB and returns the authoritative remaining list.
     """
-    if trusted_contacts_collection is None:
+    if _live('trusted_contacts') is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
     user_id = current_user.user_id
 
-    result = trusted_contacts_collection.delete_one(
+    result = _live('trusted_contacts').delete_one(
         {"user_id": user_id, "contact_id": contact_id})
     if result.deleted_count == 0:
         # Not found for THIS user -> either it never existed or it belongs to
         # someone else. Either way we reveal nothing and change nothing.
         raise HTTPException(status_code=404, detail="Contact not found")
 
-    contacts = list(trusted_contacts_collection.find(
+    contacts = list(_live('trusted_contacts').find(
         {"user_id": user_id}, {"_id": 0}).sort("priority", 1))
     return {
         "success": True,

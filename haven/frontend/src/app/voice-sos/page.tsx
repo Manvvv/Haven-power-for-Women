@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import {
   ArrowLeft, Mic, MicOff, Shield, MapPin, Phone, Mail, Plus,
-  Trash2, TestTube, History, AlertTriangle, Check, X, Eye, EyeOff, Info
+  Trash2, TestTube, History, AlertTriangle, Check, X, Eye, EyeOff, Info, ShieldCheck
 } from 'lucide-react'
 import { useUser } from '@clerk/nextjs'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
@@ -13,6 +13,10 @@ import { formatServerDateTime } from '@/lib/datetime'
 import {
   deriveVoiceStatus, mapRecognitionError, VOICE_STATUS_META, type TriggerPhase,
 } from '@/lib/voiceSosStatus'
+import LiveResponseMap from '@/components/LiveResponseMap'
+import {
+  getDispatchByCase, helpIsOnTheWay, DISPATCH_STATUS_LABEL, type VictimDispatchView,
+} from '@/lib/dispatch'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -317,6 +321,18 @@ export default function VoiceSOSPage() {
   // Set when recognition hits a non-recoverable error (permission blocked / no
   // mic) so the onend auto-restart loop stops instead of spinning forever.
   const recognitionFatalRef = useRef<boolean>(false)
+
+  // ── Rapid Response Network — victim "Help is on the way" live view ──────────
+  // The case the victim watches for a HUMAN-APPROVED dispatch. For voice SOS the
+  // event_id IS the case_id. We only ever READ the minimal victim view here (safe
+  // unit label + help_on_the_way; never responder PII). HAVEN never auto-dispatches,
+  // so this panel stays hidden until an authority has actually created a dispatch.
+  const [dispatchCaseId, setDispatchCaseId] = useState<string | null>(null)
+  const [victimDispatch, setVictimDispatch] = useState<VictimDispatchView | null>(null)
+  const [victimResponderCoords, setVictimResponderCoords] =
+    useState<{ lat: number; lng: number; accuracy?: number; timestamp: string } | null>(null)
+  const [victimWsConnected, setVictimWsConnected] = useState(false)
+  const victimWsRef = useRef<WebSocket | null>(null)
   
   // --- Initialization ---
   useEffect(() => {
@@ -420,7 +436,15 @@ export default function VoiceSOSPage() {
       const res = await secureFetch(`/voice-sos/history/${userId}`)
       if (res.ok) {
         const data = await res.json()
-        setHistory((data.events || []).slice(0, 10))
+        const events: VoiceEvent[] = data.events || []
+        setHistory(events.slice(0, 10))
+        // Rehydrate the live-response watch after a reload: watch the most recent
+        // REAL (non-test) event's case. getDispatchByCase returns null until an
+        // authority dispatches, so this never fabricates a response.
+        const latestReal = events.find((e) => e.trigger_type !== 'test' && !e.is_test)
+        if (latestReal?.event_id) {
+          setDispatchCaseId((prev) => prev || latestReal.event_id)
+        }
       }
     } catch (error) {
       console.error('Error fetching history:', error)
@@ -486,6 +510,85 @@ export default function VoiceSOSPage() {
     const blob = localStorage.getItem('haven_voice_pin_blob')
     if (blob) setPinLocked(true)
   }, [])
+
+  // Poll the minimal victim dispatch view for the watched case. Returns null until
+  // an authority dispatches; the status is always server-shaped (no responder PII).
+  // We never fabricate a response — a transient failure keeps the last known state.
+  useEffect(() => {
+    if (!dispatchCaseId) { setVictimDispatch(null); return }
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const d = await getDispatchByCase(dispatchCaseId)
+        if (!cancelled) setVictimDispatch(d ? (d as VictimDispatchView) : null)
+      } catch {
+        /* transient — keep last known state */
+      }
+    }
+    tick()
+    const iv = setInterval(tick, 5000)
+    return () => { cancelled = true; clearInterval(iv) }
+  }, [dispatchCaseId])
+
+  // Victim observer WebSocket — opened ONLY once help is truly on the way (a
+  // responder ACCEPTED, so help_on_the_way is true). It is READ-ONLY: the server
+  // rejects any frame a victim tries to send. Identity is the Clerk session token;
+  // the backend authorizes the victim to observe only their OWN case.
+  useEffect(() => {
+    const did = victimDispatch?.dispatch_id
+    const onTheWay = !!victimDispatch?.help_on_the_way
+    if (!did || !onTheWay) {
+      if (victimWsRef.current) {
+        try { victimWsRef.current.close() } catch { /* silent */ }
+        victimWsRef.current = null
+      }
+      setVictimWsConnected(false)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      let token = ''
+      try {
+        if (typeof window !== 'undefined' && (window as any).Clerk?.session) {
+          token = (await (window as any).Clerk.session.getToken()) || ''
+        }
+      } catch { /* no token — cannot observe */ }
+      if (cancelled || !token) return
+      try {
+        const wsBase = API.replace(/^http/, 'ws')
+        const ws = new WebSocket(
+          `${wsBase}/ws/dispatch/${encodeURIComponent(did)}?token=${encodeURIComponent(token)}`,
+        )
+        victimWsRef.current = ws
+        ws.onopen = () => { if (!cancelled) setVictimWsConnected(true) }
+        ws.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data)
+            const lat = Number(msg.latitude)
+            const lng = Number(msg.longitude)
+            if (isFinite(lat) && isFinite(lng)) {
+              setVictimResponderCoords({
+                lat, lng,
+                accuracy: isFinite(Number(msg.accuracy)) ? Number(msg.accuracy) : undefined,
+                timestamp: msg.timestamp || new Date().toISOString(),
+              })
+            }
+          } catch { /* ignore malformed frame */ }
+        }
+        ws.onclose = () => { if (!cancelled) setVictimWsConnected(false) }
+        ws.onerror = () => { if (!cancelled) setVictimWsConnected(false) }
+      } catch { /* silent — map simply shows "connecting" */ }
+    })()
+    return () => {
+      cancelled = true
+      if (victimWsRef.current) {
+        try { victimWsRef.current.close() } catch { /* silent */ }
+        victimWsRef.current = null
+      }
+      setVictimWsConnected(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [victimDispatch?.dispatch_id, victimDispatch?.help_on_the_way])
 
   const handlePinUnlock = async () => {
     if (!pinUnlock || pinUnlock.length < 4) {
@@ -1097,11 +1200,22 @@ export default function VoiceSOSPage() {
     if (!normRecent && !normAccum) return
 
     let isMatch = false
+    // The candidate phrase extracted FROM the speech transcript. This is what
+    // the user actually said, identified by the detection algorithm — NOT a
+    // blindly-read localStorage value. Sent to the backend for PBKDF2 verify.
+    let candidatePhrase = ''
 
     // 1. Direct text inclusion match (recent burst OR rolling accumulated speech buffer across slow speech/pauses)
     if (targetText) {
-      if (normRecent.includes(targetText) || normAccum.includes(targetText)) {
+      if (normRecent.includes(targetText)) {
         isMatch = true
+        // Extract the matched portion from the normalized transcript
+        const idx = normRecent.indexOf(targetText)
+        candidatePhrase = normRecent.substring(idx, idx + targetText.length)
+      } else if (normAccum.includes(targetText)) {
+        isMatch = true
+        const idx = normAccum.indexOf(targetText)
+        candidatePhrase = normAccum.substring(idx, idx + targetText.length)
       }
     }
 
@@ -1115,8 +1229,13 @@ export default function VoiceSOSPage() {
         
         if (targetWords.length === 1 && accumWords.includes(targetWords[0])) {
           isMatch = true
+          // The single matched word from the transcript
+          candidatePhrase = targetWords[0]
         } else if (targetWords.length > 1 && ratio >= 0.75) {
           isMatch = true
+          // Reconstruct the matched words found in the transcript
+          const found = targetWords.filter(tw => accumWords.includes(tw))
+          candidatePhrase = found.join(' ')
         }
       }
     }
@@ -1126,6 +1245,7 @@ export default function VoiceSOSPage() {
       const fullHash = await hashString(normRecent)
       if (fullHash === targetHash) {
         isMatch = true
+        candidatePhrase = normRecent
       }
 
       if (!isMatch) {
@@ -1136,6 +1256,8 @@ export default function VoiceSOSPage() {
             const hash = await hashString(phrase)
             if (hash === targetHash) {
               isMatch = true
+              // The exact n-gram from the speech that matched
+              candidatePhrase = phrase
               break
             }
           }
@@ -1150,7 +1272,11 @@ export default function VoiceSOSPage() {
       // Clear rolling buffer on match to avoid double triggers
       accumulatedSpeechRef.current = []
       setAccumulatedText('')
-      triggerSOS()
+      // Pass the candidate phrase extracted from the speech transcript AND the
+      // raw recent transcript.  triggerSOS sends the candidate as spoken_phrase
+      // (for direct PBKDF2 match) and the raw text as transcript context (for
+      // the backend n-gram fallback if needed).
+      triggerSOS(candidatePhrase, normRecent || normAccum)
     }
   }
 
@@ -1192,7 +1318,7 @@ export default function VoiceSOSPage() {
     return d || `Unexpected error (HTTP ${status}).`
   }
 
-  const triggerSOS = async () => {
+  const triggerSOS = async (detectedPhrase: string = '', recentTranscript: string = '') => {
     isTriggeringRef.current = true
     // Visible lifecycle: we are now sending. This also blocks any duplicate
     // trigger from a second match (the banner + isTriggeringRef both guard it).
@@ -1221,14 +1347,19 @@ export default function VoiceSOSPage() {
         method: 'POST',
         body: JSON.stringify({
           user_id: userId,
-          spoken_phrase: safeWordText || safeWord,
-          hashed_safe_word: safeWordHash,
+          // spoken_phrase: the candidate extracted from the speech transcript.
+          // Falls back to safeWordText/safeWord for the same-session case where
+          // the user set their safe word and immediately tested it.
+          spoken_phrase: detectedPhrase || safeWordText || safeWord || undefined,
+          hashed_safe_word: safeWordHash || undefined,
           latitude: lat,
           longitude: lng,
           location_accuracy: 5.0,
           timestamp: new Date().toISOString(),
-          // Optional voice-AI metadata for authority context (no raw audio).
-          transcript: voiceAI?.transcript || undefined,
+          // transcript: the raw recent speech text for the backend's n-gram
+          // PBKDF2 fallback when spoken_phrase alone doesn't match (e.g. user
+          // said extra words around the safe word).
+          transcript: recentTranscript || voiceAI?.transcript || undefined,
           intent: voiceAI?.intent?.intent || undefined,
           severity: voiceAI?.risk?.severity || undefined,
           risk_score: voiceAI?.risk?.risk_score ?? undefined,
@@ -1245,6 +1376,9 @@ export default function VoiceSOSPage() {
           setSosAlertData(data)
           setShowSOSModal(true)
           if (data.event_id) {
+            // For voice SOS the event_id IS the case_id — start watching it for a
+            // human-approved dispatch so the victim sees truthful live status.
+            setDispatchCaseId(data.event_id)
             startLocationStreaming(data.event_id)
             captureForensicEvidence(data.event_id)
           }
@@ -1609,7 +1743,7 @@ export default function VoiceSOSPage() {
                 )}
 
                 <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                  <button onClick={triggerSOS} style={{ flex: 1, padding: '9px', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg,#dc2626,#991b1b)', color: 'white', fontWeight: 800, fontSize: '0.8rem', cursor: 'pointer' }}>
+                  <button onClick={() => triggerSOS()} style={{ flex: 1, padding: '9px', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg,#dc2626,#991b1b)', color: 'white', fontWeight: 800, fontSize: '0.8rem', cursor: 'pointer' }}>
                     Send SOS
                   </button>
                   <button onClick={() => { setVoiceAI(null); setAiError('') }} style={{ flex: 1, padding: '9px', borderRadius: 8, border: '1px solid #e2d6e0', background: 'white', color: colors.muted, fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer' }}>
@@ -1623,6 +1757,99 @@ export default function VoiceSOSPage() {
             )}
           </div>
         </div>
+
+        {/* ── Rapid Response Network — victim live-response panel ──────────────
+            Appears ONLY after an AUTHORITY has created a human-approved dispatch
+            for this case. Truthful states only: "Finding an available responder…"
+            before a responder ACCEPTS, "Help is on the way" after. It never implies
+            police are coming before acceptance and never fabricates an ETA. */}
+        {victimDispatch && (() => {
+          const status = victimDispatch.status
+          const onTheWay = !!victimDispatch.help_on_the_way || helpIsOnTheWay(status)
+          const terminalFailed = status === 'FAILED' || status === 'EXPIRED' || status === 'CANCELLED'
+          const resolved = status === 'HELP_PROVIDED' || status === 'RESOLVED'
+          const headline =
+            status === 'ARRIVED' ? 'A verified responder has arrived'
+            : onTheWay ? 'Help is on the way'
+            : resolved ? (status === 'RESOLVED' ? 'This emergency has been resolved' : 'Help has been provided')
+            : terminalFailed ? (status === 'CANCELLED' ? 'The dispatch was cancelled'
+                : status === 'EXPIRED' ? 'The response offer expired'
+                : 'No responder was available')
+            : 'Finding an available responder…'
+          const tone = terminalFailed ? colors.danger : (onTheWay || resolved) ? colors.success : colors.warning
+          const bg = terminalFailed ? '#fef2f2' : (onTheWay || resolved) ? '#f0fdf4' : '#fffbeb'
+          const border = terminalFailed ? '#fecaca' : (onTheWay || resolved) ? '#86efac' : '#fcd34d'
+          return (
+            <div style={{ ...styles.card, background: bg, borderColor: border }}>
+              <h2 style={styles.cardTitle}><ShieldCheck size={24} color={tone} /> Rapid Response</h2>
+
+              {/* Always-visible, truthful status line (ARIA-live for screen readers). */}
+              <div role="status" aria-live="assertive" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                <span aria-hidden="true" style={{
+                  width: 12, height: 12, borderRadius: '50%', background: tone, flexShrink: 0,
+                  boxShadow: onTheWay && !resolved ? `0 0 0 5px ${tone}22` : 'none',
+                  animation: onTheWay && !resolved ? 'pulse 1.6s infinite' : 'none',
+                }} />
+                <span style={{ fontWeight: 800, fontSize: '1.05rem', color: tone }}>{headline}</span>
+              </div>
+
+              <div style={{ fontSize: '0.85rem', color: colors.dark, marginBottom: 12 }}>
+                {DISPATCH_STATUS_LABEL[status]}
+                {victimDispatch.responder_label && onTheWay && (
+                  <> · <strong>{victimDispatch.responder_label}</strong></>
+                )}
+              </div>
+              {/* The live map appears only once a responder has accepted, so we
+                  never render a map that could imply someone is already coming.
+                  The pin is the victim's OWN GPS; the responder marker comes from
+                  the authenticated observer socket. */}
+              {onTheWay && !resolved && (
+                <LiveResponseMap
+                  incident={currentLocation ? { lat: currentLocation.lat, lng: currentLocation.lng } : null}
+                  responder={victimResponderCoords}
+                  connected={victimWsConnected}
+                  height={280}
+                  caption="The pin is your location; the verified responder is shown approaching. Distances are straight-line — HAVEN never fabricates an ETA."
+                />
+              )}
+
+              {onTheWay && !resolved && !victimResponderCoords && (
+                <div style={{ marginTop: 10, fontSize: '0.82rem', color: '#b45309', fontWeight: 600 }}>
+                  A verified responder is assigned, but their live location is temporarily unavailable.
+                </div>
+              )}
+
+              {!onTheWay && !resolved && !terminalFailed && (
+                <div style={{ fontSize: '0.82rem', color: colors.muted, lineHeight: 1.5 }}>
+                  An authorized HAVEN dispatcher is locating the nearest verified responder.
+                  You will see live location here only after a responder accepts — HAVEN never
+                  dispatches help automatically.
+                </div>
+              )}
+
+              {terminalFailed && (
+                <div style={{ marginTop: 4 }}>
+                  <div style={{ fontSize: '0.85rem', color: colors.dark, marginBottom: 10, lineHeight: 1.5 }}>
+                    {status === 'FAILED'
+                      ? 'No verified responder was able to accept. If you are in danger, call emergency services now.'
+                      : status === 'EXPIRED'
+                      ? 'The response offer expired before a responder accepted. If you are in danger, call emergency services now.'
+                      : 'The dispatch was cancelled by the authority. If you still need help, call emergency services now.'}
+                  </div>
+                  <a href="tel:112" style={{ ...styles.btnPrimary, textDecoration: 'none' }}>
+                    <Phone size={16} /> Call 112
+                  </a>
+                </div>
+              )}
+
+              {resolved && (
+                <div style={{ fontSize: '0.85rem', color: colors.success, fontWeight: 600 }}>
+                  This response has been completed and closed.
+                </div>
+              )}
+            </div>
+          )
+        })()}
 
         {/* Setup Section */}
         <div style={styles.card}>

@@ -146,18 +146,18 @@ cd haven
 ### 2. Backend Setup
 
 ```bash
-cd haven/backend
+cd haven
 
-# Create virtual environment
-python -m venv .venv
+# Create the canonical backend virtual environment
+python -m venv backend/.venv
 
 # Activate (Windows)
-.venv\Scripts\activate
+backend\.venv\Scripts\activate
 # Activate (Mac/Linux)
-source .venv/bin/activate
+source backend/.venv/bin/activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install runtime and test dependencies
+pip install -r backend/requirements-dev.txt
 ```
 
 ### 3. Environment Variables
@@ -233,8 +233,8 @@ npm run start   # serves the built app on http://localhost:3000
 ### 7. Running the tests
 
 ```bash
-# Backend (from haven/backend, with the venv active and requirements installed):
-pytest
+# Backend (from the haven repository root):
+backend/.venv/Scripts/python.exe -m pytest backend
 
 # Frontend safety/regression harnesses (from haven/frontend — no test runner needed):
 node test/ariaVoice.spec.mjs

@@ -8,6 +8,11 @@ import { useNotifications } from '@/hooks/useNotifications'
 import { Bell } from 'lucide-react'
 import SOSLifecycle from '@/components/SOSLifecycle'
 import { parseServerDate, formatServerDateTime } from '@/lib/datetime'
+import LiveResponseMap from '@/components/LiveResponseMap'
+import {
+  createDispatch, getDispatchByCase, cancelDispatch,
+  AuthorityDispatchView, DISPATCH_STATUS_LABEL, DispatchStatus,
+} from '@/lib/dispatch'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -121,6 +126,17 @@ export default function AuthorityPage() {
   const [trackingConnected, setTrackingConnected] = useState(false)
   const [dispatchStatusMap, setDispatchStatusMap] = useState<Record<string, { agency: string; status: string; dispatch_id: string }>>({})
   const trackingWsRef = useRef<WebSocket | null>(null)
+
+  // ── Rapid Response Network (RRN) — human-approved verified-responder dispatch ──
+  // Kept entirely separate from the legacy simulated agency webhook above.
+  const [rrnConfirmCase, setRrnConfirmCase] = useState<SOSCase | null>(null)
+  const [rrnConfirmNote, setRrnConfirmNote] = useState('')
+  const [rrnDispatch, setRrnDispatch] = useState<AuthorityDispatchView | null>(null)
+  const [rrnBusy, setRrnBusy] = useState(false)
+  const [rrnError, setRrnError] = useState('')
+  const [rrnResponderCoords, setRrnResponderCoords] = useState<{ lat: number; lng: number; accuracy?: number; timestamp: string } | null>(null)
+  const [rrnWsConnected, setRrnWsConnected] = useState(false)
+  const rrnWsRef = useRef<WebSocket | null>(null)
 
   // DIR Form & Discreet Dispatch state
   const [dirFormCase, setDirFormCase] = useState<SOSCase | null>(null)
@@ -311,6 +327,7 @@ export default function AuthorityPage() {
       try { trackingWsRef.current.close() } catch { /* silent */ }
       trackingWsRef.current = null
     }
+    closeRrnPanel()
     setActiveLiveTrackCase(null)
     setLiveCoords(null)
     setTrackingConnected(false)
@@ -339,6 +356,132 @@ export default function AuthorityPage() {
       alert('Failed to connect to dispatch gateway')
     }
   }
+
+  // ── RRN: open the human-approval confirmation modal (no dispatch happens yet) ──
+  const beginRrnDispatch = (c: SOSCase) => {
+    setRrnConfirmCase(c)
+    setRrnConfirmNote('')
+    setRrnError('')
+  }
+
+  // ── RRN: load any existing dispatch for the case (authority operational view) ──
+  const refreshRrnDispatch = async (caseId: string) => {
+    try {
+      const d = await getDispatchByCase(caseId)
+      // Authority tokens always receive the operational (authority) shape.
+      setRrnDispatch((d as AuthorityDispatchView) || null)
+    } catch {
+      /* leave the last known state; the poll will retry */
+    }
+  }
+
+  // ── RRN: the single human-approved dispatch action (authority-only) ──
+  const confirmRrnDispatch = async () => {
+    if (!rrnConfirmCase) return
+    setRrnBusy(true)
+    setRrnError('')
+    try {
+      const result = await createDispatch({ case_id: rrnConfirmCase.case_id, notes: rrnConfirmNote.trim() })
+      setRrnDispatch(result.dispatch)
+      setRrnConfirmCase(null)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Could not dispatch a responder.'
+      // A duplicate means a live dispatch already exists — surface it rather than erroring out.
+      if (/already exists/i.test(msg) && rrnConfirmCase) {
+        await refreshRrnDispatch(rrnConfirmCase.case_id)
+        setRrnConfirmCase(null)
+      } else {
+        setRrnError(msg)
+      }
+    } finally {
+      setRrnBusy(false)
+    }
+  }
+
+  const cancelRrnDispatch = async () => {
+    if (!rrnDispatch) return
+    setRrnBusy(true)
+    try {
+      const d = await cancelDispatch(rrnDispatch.dispatch_id, 'Cancelled by authority dispatcher')
+      setRrnDispatch(d)
+    } catch (err: unknown) {
+      setRrnError(err instanceof Error ? err.message : 'Could not cancel the dispatch.')
+    } finally {
+      setRrnBusy(false)
+    }
+  }
+
+  const closeRrnPanel = () => {
+    try { rrnWsRef.current?.close() } catch { /* silent */ }
+    rrnWsRef.current = null
+    setRrnDispatch(null)
+    setRrnResponderCoords(null)
+    setRrnWsConnected(false)
+  }
+
+  // RRN: while the live-tracking room for a case is open, keep its dispatch fresh.
+  useEffect(() => {
+    const caseId = activeLiveTrackCase?.case_id
+    if (!caseId) {
+      try { rrnWsRef.current?.close() } catch { /* silent */ }
+      rrnWsRef.current = null
+      setRrnDispatch(null); setRrnResponderCoords(null); setRrnWsConnected(false)
+      return
+    }
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const d = await getDispatchByCase(caseId)
+        if (!cancelled) setRrnDispatch((d as AuthorityDispatchView) || null)
+      } catch { /* retry on next tick */ }
+    }
+    tick()
+    const id = setInterval(tick, 5000)
+    return () => { cancelled = true; clearInterval(id) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLiveTrackCase?.case_id])
+
+  // RRN: observe the authenticated incident room (read-only) once a unit accepted.
+  useEffect(() => {
+    const did = rrnDispatch?.dispatch_id
+    const st = rrnDispatch?.status
+    const live = !!did && (st === 'ACCEPTED' || st === 'EN_ROUTE' || st === 'ARRIVED')
+    if (!live || !did) {
+      try { rrnWsRef.current?.close() } catch { /* silent */ }
+      rrnWsRef.current = null
+      setRrnWsConnected(false)
+      return
+    }
+    const token = getAuthorityToken() || ''
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsHost = API.replace(/^https?:\/\//, '') || 'localhost:8000'
+    let closed = false
+    const ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/dispatch/${encodeURIComponent(did)}?token=${encodeURIComponent(token)}`)
+    rrnWsRef.current = ws
+    ws.onopen = () => { if (!closed) setRrnWsConnected(true) }
+    ws.onmessage = (evt) => {
+      try {
+        const data = JSON.parse(evt.data)
+        if (typeof data.latitude === 'number' && typeof data.longitude === 'number') {
+          setRrnResponderCoords({
+            lat: data.latitude, lng: data.longitude,
+            accuracy: data.accuracy, timestamp: data.timestamp || new Date().toISOString(),
+          })
+        }
+      } catch { /* ignore non-location frames */ }
+    }
+    ws.onclose = () => { if (!closed) setRrnWsConnected(false) }
+    ws.onerror = () => { if (!closed) setRrnWsConnected(false) }
+    return () => {
+      closed = true
+      try { ws.close() } catch { /* silent */ }
+      if (rrnWsRef.current === ws) rrnWsRef.current = null
+      setRrnWsConnected(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rrnDispatch?.dispatch_id, rrnDispatch?.status])
+
+
 
   // ── DIR Form-1 Generation ──
   const generateDIRForm = async (c: SOSCase) => {
@@ -682,6 +825,27 @@ export default function AuthorityPage() {
                 </span>
               )}
             </div>
+          )}
+          {unlocked && (
+            <Link href="/authority/rapid-response" prefetch={true} aria-label="Open the Rapid Response Center" style={{ textDecoration: 'none' }}>
+              <button style={{ background: '#db2777', border: '1px solid #db2777', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', color: 'white', display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.75rem', fontWeight: 700 }}>
+                <ShieldAlert size={13} /><span>Rapid Response</span>
+              </button>
+            </Link>
+          )}
+          {unlocked && (
+            <Link href="/authority/providers" prefetch={true} aria-label="Open the Response Providers section" style={{ textDecoration: 'none' }}>
+              <button style={{ background: '#0f766e', border: '1px solid #0f766e', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', color: 'white', display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.75rem', fontWeight: 700 }}>
+                <Shield size={13} /><span>Providers</span>
+              </button>
+            </Link>
+          )}
+          {unlocked && (
+            <Link href="/authority/providers?register=true" prefetch={true} aria-label="Register Response Provider for Admin Review" style={{ textDecoration: 'none' }}>
+              <button style={{ background: '#047857', border: '1px solid #047857', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', color: 'white', display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.75rem', fontWeight: 700 }}>
+                <UserCheck size={13} /><span>Register Provider</span>
+              </button>
+            </Link>
           )}
           <button onClick={fetchCases} style={{ background: 'none', border: '1px solid #f472b6', borderRadius: 8, padding: '7px 10px', cursor: 'pointer', color: '#f472b6', display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.75rem' }}>
             <RefreshCw size={13} /><span>Refresh</span>
@@ -1357,6 +1521,129 @@ export default function AuthorityPage() {
                 }}
               >
                 🚨 Fast Dispatch 112
+              </button>
+            </div>
+
+            {/* ── Rapid Response Network: human-approved verified-responder dispatch ── */}
+            <div style={{ marginTop: 16, borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <Shield size={16} color="#2563eb" />
+                <span style={{ fontWeight: 800, color: '#0f172a', fontSize: '0.9rem' }}>Rapid Response Network</span>
+              </div>
+
+              {(() => {
+                const d = rrnDispatch
+                const terminal = !d || ['CANCELLED', 'EXPIRED', 'FAILED', 'RESOLVED'].includes(d.status)
+                const incident = d?.incident_location
+                  ? { lat: d.incident_location.coordinates[1], lng: d.incident_location.coordinates[0] }
+                  : (liveCoords ? { lat: liveCoords.lat, lng: liveCoords.lng } : null)
+                const showMap = !!d && ['ACCEPTED', 'EN_ROUTE', 'ARRIVED'].includes(d.status)
+                return (
+                  <>
+                    {d && (
+                      <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 12, marginBottom: 10 }}>
+                        <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#0f172a' }}>
+                          {DISPATCH_STATUS_LABEL[d.status as DispatchStatus] || d.status}
+                        </div>
+                        <div style={{ fontSize: '0.78rem', color: '#64748b', marginTop: 4 }}>
+                          {d.responder_label ? <>Unit: <strong>{d.responder_label}</strong></> : 'No unit assigned yet'}
+                          {d.assigned_responder_id ? '' : ''}
+                        </div>
+                        {showMap && (
+                          <div style={{ marginTop: 10 }}>
+                            <LiveResponseMap
+                              incident={incident}
+                              responder={rrnResponderCoords}
+                              connected={rrnWsConnected}
+                              height={220}
+                              caption="Authority view · straight-line distance, no fabricated ETA."
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {rrnError && (
+                      <div role="alert" style={{ background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', borderRadius: 8, padding: '8px 10px', fontSize: '0.8rem', marginBottom: 10 }}>
+                        {rrnError}
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      {terminal ? (
+                        <button
+                          onClick={() => beginRrnDispatch(activeLiveTrackCase)}
+                          disabled={rrnBusy}
+                          style={{ flex: 1, background: '#2563eb', color: 'white', border: 'none', padding: '12px', borderRadius: 10, fontWeight: 800, fontSize: '0.88rem', cursor: 'pointer' }}
+                        >
+                          🛡️ Dispatch Verified Responder
+                        </button>
+                      ) : (
+                        <button
+                          onClick={cancelRrnDispatch}
+                          disabled={rrnBusy}
+                          style={{ flex: 1, background: '#fff', color: '#b91c1c', border: '2px solid #fecaca', padding: '12px', borderRadius: 10, fontWeight: 800, fontSize: '0.88rem', cursor: 'pointer' }}
+                        >
+                          {rrnBusy ? 'Working…' : 'Cancel dispatch'}
+                        </button>
+                      )}
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: '0.72rem', color: '#94a3b8' }}>
+                      HAVEN never auto-dispatches. This sends an authenticated offer to the nearest verified,
+                      available unit; only an accepted unit is shown as “on the way”.
+                    </div>
+                  </>
+                )
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {/* ── RRN Dispatch Confirmation Modal (explicit human approval) ── */}
+      {rrnConfirmCase && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100000, padding: 16 }}>
+          <div style={{ background: 'white', borderRadius: 18, padding: 24, maxWidth: 460, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <ShieldAlert size={22} color="#dc2626" />
+              <h3 style={{ margin: 0, fontSize: '1.1rem', color: '#0f172a' }}>Confirm human-approved dispatch</h3>
+            </div>
+            <p style={{ fontSize: '0.86rem', color: '#334155', marginTop: 0 }}>
+              You are about to request a verified field responder for case{' '}
+              <strong>{rrnConfirmCase.case_id}</strong>. HAVEN will offer this incident to the nearest
+              eligible, available unit. Confirm only if dispatching help is appropriate — this action is audited.
+            </p>
+            <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: '#334155', marginBottom: 5 }}>
+              Dispatcher note (optional, no victim PII)
+            </label>
+            <textarea
+              value={rrnConfirmNote}
+              onChange={(e) => setRrnConfirmNote(e.target.value)}
+              rows={2}
+              maxLength={500}
+              placeholder="e.g. Caller reports immediate danger."
+              style={{ width: '100%', boxSizing: 'border-box', padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.85rem', resize: 'vertical' }}
+            />
+            {rrnError && (
+              <div role="alert" style={{ background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', borderRadius: 8, padding: '8px 10px', fontSize: '0.8rem', marginTop: 10 }}>
+                {rrnError}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+              <button
+                onClick={() => { setRrnConfirmCase(null); setRrnError('') }}
+                disabled={rrnBusy}
+                style={{ flex: 1, background: '#f1f5f9', color: '#334155', border: '1px solid #e2e8f0', padding: '12px', borderRadius: 10, fontWeight: 700, fontSize: '0.88rem', cursor: 'pointer' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmRrnDispatch}
+                disabled={rrnBusy}
+                style={{ flex: 1, background: '#dc2626', color: 'white', border: 'none', padding: '12px', borderRadius: 10, fontWeight: 800, fontSize: '0.88rem', cursor: 'pointer' }}
+              >
+                {rrnBusy ? 'Dispatching…' : 'Confirm & dispatch'}
               </button>
             </div>
           </div>

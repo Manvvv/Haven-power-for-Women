@@ -83,30 +83,6 @@ For law enforcement and NGO partners:
 
 ## 📁 Project Structure
 
-```
-hacknaovate2.0/
-├── haven/
-│   ├── backend/
-│   │   ├── main.py              # FastAPI app — all endpoints
-│   │   ├── .env                 # API keys (never commit this)
-│   │   ├── requirements.txt
-│   │   └── setup_indexes.py     # MongoDB vector index setup
-│   └── frontend/
-│       ├── src/
-│       │   ├── app/
-│       │   │   ├── page.tsx           # Landing page
-│       │   │   ├── dashboard/         # User dashboard + panic button
-│       │   │   ├── sos/               # Discreet SOS flow
-│       │   │   ├── therapy/           # Aria AI therapy chat
-│       │   │   ├── legal/             # Legal assistant
-│       │   │   └── authority/         # Officer dashboard
-│       │   └── components/
-│       │       ├── AriaCanvas.tsx     # Pure Canvas 2D avatar
-│       │       └── PanicButton.tsx    # GPS panic button
-│       ├── next.config.js
-│       └── package.json
-└── README.md
-```
 
 ---
 

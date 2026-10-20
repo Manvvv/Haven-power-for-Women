@@ -28,11 +28,14 @@ import time
 import hashlib
 import logging
 import threading
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from dotenv import load_dotenv
 from fastapi import Request, HTTPException, status
 
 logger = logging.getLogger("haven_backend")
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 # ─── Environment / configuration ────────────────────────────
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
@@ -156,6 +159,7 @@ def _resolve_backend() -> Tuple[str, object]:
         _backend_resolved = True
 
         if not (REDIS_ENABLED and REDIS_URL):
+            _redis_client = None
             if IS_PRODUCTION and REDIS_REQUIRED_IN_PRODUCTION:
                 _backend_mode = "fail_closed"
                 logger.error(
@@ -185,6 +189,7 @@ def _resolve_backend() -> Tuple[str, object]:
             _backend_mode = "redis"
             logger.info("Rate limiter backend: Redis distributed backend initialized.")
         except Exception as e:  # ImportError, ConnectionError, etc.
+            _redis_client = None
             if IS_PRODUCTION and REDIS_REQUIRED_IN_PRODUCTION:
                 _backend_mode = "fail_closed"
                 logger.error(

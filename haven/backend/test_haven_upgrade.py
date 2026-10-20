@@ -30,6 +30,26 @@ def user_token():
     return create_access_token(user_id="USER-001", role="user", name="User Meera")
 
 
+@pytest.fixture(autouse=True)
+def _restore_rate_limiter_state():
+    """Test isolation: several tests in this module swap the process-global rate
+    limiter to a fake Redis or to memory mode. Snapshot the globals and restore them
+    after every test so that mutation cannot leak into later test modules that rely
+    on the real backend (which produced cross-file 429/503 flakiness)."""
+    snapshot = {
+        "IS_PRODUCTION": _rl.IS_PRODUCTION,
+        "REDIS_ENABLED": _rl.REDIS_ENABLED,
+        "REDIS_URL": _rl.REDIS_URL,
+        "REDIS_REQUIRED_IN_PRODUCTION": _rl.REDIS_REQUIRED_IN_PRODUCTION,
+        "_backend_resolved": _rl._backend_resolved,
+        "_backend_mode": _rl._backend_mode,
+        "_redis_client": _rl._redis_client,
+    }
+    yield
+    for name, value in snapshot.items():
+        setattr(_rl, name, value)
+
+
 class TestP1AuthorityCredentials:
     """P1-7: individual authority credentials + verified server-side identity.
 
@@ -742,8 +762,10 @@ class TestAIRiskClassifier:
     def test_metrics_computation_correct(self):
         """Backend-comparison metric math is correct on a known tiny example."""
         import importlib.util, pathlib
-        spec = importlib.util.spec_from_file_location(
-            "compare_backends", str(pathlib.Path("ml/compare_backends.py")))
+        ml_path = pathlib.Path("ml/compare_backends.py")
+        if not ml_path.exists():
+            ml_path = pathlib.Path(__file__).resolve().parent / "ml" / "compare_backends.py"
+        spec = importlib.util.spec_from_file_location("compare_backends", str(ml_path))
         cb = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cb)
         labels = ["LOW", "MODERATE", "HIGH", "CRITICAL"]
@@ -758,11 +780,14 @@ class TestAIRiskClassifier:
     def test_compare_rules_backend_runs(self):
         """The rule backend evaluates live and returns in-range metrics (DEMO)."""
         import importlib.util, pathlib, json
-        spec = importlib.util.spec_from_file_location(
-            "compare_backends2", str(pathlib.Path("ml/compare_backends.py")))
+        ml_path = pathlib.Path("ml/compare_backends.py")
+        if not ml_path.exists():
+            ml_path = pathlib.Path(__file__).resolve().parent / "ml" / "compare_backends.py"
+        spec = importlib.util.spec_from_file_location("compare_backends2", str(ml_path))
         cb = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cb)
         rows = cb.load_dataset(pathlib.Path(cb.DATA_PATH))
+
         res = cb.evaluate_backend("rules", rows)
         assert res["available"] is True
         assert 0.0 <= res["accuracy"] <= 1.0

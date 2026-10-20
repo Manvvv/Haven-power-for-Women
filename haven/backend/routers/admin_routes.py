@@ -10,6 +10,8 @@ from services.audit_service import log_audit
 from services.authority_service import (
     CANONICAL_ROLES, get_authority_by_id, set_role,
 )
+from services import responder_service
+from models.schemas import ResponderAdminUpdateModel
 
 logger = logging.getLogger("haven_backend")
 router = APIRouter(prefix="", tags=["Admin"])
@@ -278,3 +280,272 @@ def get_system_stats(current_user: AuthUser = Depends(require_admin)):
             "total_audit_records": total_audits
         }
     }
+
+
+# ─── Rapid Response Network: responder approval (admin-only) ────────────────────
+def _admin_responder_view(rec: dict) -> dict:
+    """Admin management view of a responder — NEVER the password hash/salt."""
+    if not rec:
+        return {}
+    lu = rec.get("location_updated_at")
+    return {
+        "responder_id": rec.get("responder_id"),
+        "badge_number": rec.get("badge_number"),
+        "officer_name": rec.get("officer_name"),
+        "display_label": rec.get("display_label"),
+        "role": rec.get("role", "responder"),
+        "active": bool(rec.get("active", False)),
+        "verified": bool(rec.get("verified", False)),
+        "status": rec.get("status"),
+        "capabilities": rec.get("capabilities", []),
+        "jurisdiction": rec.get("jurisdiction", ""),
+        "has_location": bool(rec.get("current_location")),
+        "location_updated_at": lu.isoformat() if hasattr(lu, "isoformat") else lu,
+        "assigned_dispatch_id": rec.get("assigned_dispatch_id"),
+    }
+
+
+@router.get("/admin/responders")
+def list_responders_endpoint(current_user: AuthUser = Depends(require_admin)):
+    """List all field-responder accounts for admin approval/management (Admin only).
+
+    ADMIN-only, matching the existing trusted admin workflow. Password material is
+    never returned. Responders are provisioned on the server (provision_responder.py);
+    this endpoint approves/verifies/activates them — it does not create them.
+    """
+    rows = responder_service.list_responders()
+    return {"responders": [_admin_responder_view(r) for r in rows], "total": len(rows)}
+
+
+@router.patch("/admin/responders/{responder_id}")
+def update_responder_endpoint(
+    responder_id: str = Path(...),
+    body: ResponderAdminUpdateModel = Body(...),
+    current_user: AuthUser = Depends(require_admin),
+):
+    """Approve (verify) and/or (de)activate a responder (Admin only).
+
+    This is the human approval gate: a provisioned responder is INERT (verified=
+    False) until an admin flips verified=True here. Authorization and the acting
+    admin identity come ONLY from the verified token (require_admin); no body field
+    can grant access or spoof the actor. verified/active are the ONLY mutable
+    fields — role is fixed server-side and cannot be elevated through this endpoint.
+    """
+    if body.verified is None and body.active is None:
+        raise HTTPException(status_code=400, detail="Provide 'verified' and/or 'active' to update.")
+
+    existing = responder_service.get_responder_by_id(responder_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"No responder account found for '{responder_id}'.")
+
+    updated = existing
+    if body.active is not None:
+        ok = responder_service.set_active(responder_id, bool(body.active))
+        if not ok:
+            raise HTTPException(status_code=404, detail=f"No responder account found for '{responder_id}'.")
+    if body.verified is not None:
+        rec = responder_service.set_verified(responder_id, bool(body.verified))
+        if rec is None:
+            raise HTTPException(status_code=404, detail=f"No responder account found for '{responder_id}'.")
+
+    updated = responder_service.get_responder_by_id(responder_id) or existing
+    # Named audit events per the provider-management spec; one per changed flag.
+    if body.verified is not None:
+        log_audit(actor_id=current_user.user_id, role=current_user.role,
+                  action="PROVIDER_VERIFICATION_APPROVED" if body.verified else "PROVIDER_VERIFICATION_REVOKED",
+                  metadata={"responder_id": responder_id, "verified": bool(body.verified)})
+    if body.active is not None:
+        log_audit(actor_id=current_user.user_id, role=current_user.role,
+                  action="PROVIDER_ACTIVATED" if body.active else "PROVIDER_DEACTIVATED",
+                  metadata={"responder_id": responder_id, "active": bool(body.active)})
+    log_audit(
+        actor_id=current_user.user_id,
+        role=current_user.role,
+        action="RESPONDER_ADMIN_UPDATE",
+        metadata={
+            "responder_id": responder_id,
+            "verified": body.verified,
+            "active": body.active,
+            "resulting_status": updated.get("status"),
+        },
+    )
+    return {"success": True, "responder": _admin_responder_view(updated)}
+
+
+# ─── Provider provisioning (ADMIN ONLY, per the Q1 decision) ─────────────────────
+# AUTHORITY can never reach these. Creating a provider does NOT make it trusted: the
+# record is created INERT (verified=False, OFFLINE, no usable password) and only an
+# admin verification flips it, after the provider completes their own password setup
+# with a single-use token. The role is fixed to "responder" server-side and is never
+# read from the request body.
+_PROVIDER_CATEGORY_CHOICES = tuple(responder_service.PROVIDER_CATEGORIES)
+
+
+@router.post("/admin/providers", status_code=201)
+def create_provider_endpoint(
+    body: dict = Body(...),
+    current_user: AuthUser = Depends(require_admin),
+):
+    """Provision a provider record and issue a single-use setup token (ADMIN only).
+
+    Required: badge_number, display_name. Optional: provider_category, organization,
+    station_unit, jurisdiction, capabilities (list), contact. Any `role`, `verified`,
+    `active`, `status`, or `password` field in the body is IGNORED — those are
+    trusted-backend-only. The setup token is returned exactly once for out-of-band
+    hand-off to the provider; it is never stored in plaintext or logged.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Invalid request body.")
+    badge = str(body.get("badge_number") or "").strip()
+    display = str(body.get("display_name") or "").strip()
+    if not badge or len(badge) > 40 or not display or len(display) > 120:
+        raise HTTPException(status_code=422, detail="badge_number and display_name are required (bounded length).")
+    category = responder_service._normalize_category(body.get("provider_category")) or "police"
+    if category not in _PROVIDER_CATEGORY_CHOICES:
+        raise HTTPException(status_code=422, detail="Unsupported provider category.")
+    caps = body.get("capabilities") or []
+    if not isinstance(caps, list) or len(caps) > 20:
+        raise HTTPException(status_code=422, detail="capabilities must be a list of at most 20 tags.")
+    caps = [str(c).strip().lower()[:40] for c in caps if str(c).strip()]
+    if responder_service.get_responder(badge) is not None:
+        raise HTTPException(status_code=409, detail="A provider with this badge number already exists.")
+
+    rec = responder_service.create_responder_inert(
+        badge_number=badge,
+        officer_name=display,
+        display_label=display,
+        capabilities=caps,
+        jurisdiction=str(body.get("jurisdiction") or "")[:120],
+        provider_category=category,
+        organization=str(body.get("organization") or "")[:120],
+        station_unit=str(body.get("station_unit") or "")[:120],
+        contact=str(body.get("contact") or "")[:120],
+        active=True,
+    )
+    # Created with a random unusable password; the provider must set their own.
+    responder_service.mark_password_unset(rec.get("responder_id"))
+    try:
+        token = responder_service.issue_setup_token(rec.get("responder_id"))
+    except responder_service.SetupStoreUnavailable:
+        raise HTTPException(status_code=503, detail="Provider setup store is unavailable. Try again later.")
+    log_audit(actor_id=current_user.user_id, role=current_user.role, action="PROVIDER_CREATED",
+              metadata={"responder_id": rec.get("responder_id"), "provider_category": category})
+    return {
+        "success": True,
+        "provider": _admin_responder_view(rec),
+        "provisioning_state": responder_service.provisioning_state(
+            responder_service.get_responder_by_id(rec.get("responder_id")) or rec),
+        # Shown ONCE. Hand off out-of-band; it expires and is single-use.
+        "setup_token": token,
+        "setup_token_expires_in_seconds": responder_service.SETUP_TOKEN_TTL_SECONDS,
+    }
+
+
+# ─── Admin Review of Authority Provider Registrations & Requests ────────────────
+from services import provider_registration_service as prs  # noqa: E402
+
+
+@router.get("/admin/provider-registrations")
+def admin_list_provider_registrations_endpoint(
+    status: str = None,
+    current_user: AuthUser = Depends(require_admin),
+):
+    """List all provider registrations across jurisdictions (Admin only)."""
+    rows = prs.list_registrations(status=status)
+    return {"registrations": rows, "total": len(rows)}
+
+
+@router.post("/admin/provider-registrations/{registration_id}/approve")
+def admin_approve_provider_registration_endpoint(
+    registration_id: str,
+    current_user: AuthUser = Depends(require_admin),
+):
+    """Approve a pending provider registration (Admin only).
+
+    Creates an INERT responder record and issues a single-use setup token.
+    """
+    try:
+        doc = prs.approve_registration(
+            registration_id=registration_id,
+            reviewed_by=current_user.user_id,
+            reviewed_by_role=current_user.role,
+        )
+        return {
+            "success": True,
+            "registration": doc,
+            "setup_token": doc.get("setup_token"),
+            "setup_token_expires_in_seconds": responder_service.SETUP_TOKEN_TTL_SECONDS,
+            "responder": doc.get("responder"),
+            "provisioning_state": doc.get("provisioning_state"),
+        }
+    except prs.RegistrationNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (prs.RegistrationStateError, prs.RegistrationConflictError) as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post("/admin/provider-registrations/{registration_id}/reject")
+def admin_reject_provider_registration_endpoint(
+    registration_id: str,
+    body: dict,
+    current_user: AuthUser = Depends(require_admin),
+):
+    """Reject a pending provider registration with reason (Admin only)."""
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Invalid request body.")
+    reason = str(body.get("reason") or "").strip()
+    try:
+        doc = prs.reject_registration(
+            registration_id=registration_id,
+            reason=reason,
+            reviewed_by=current_user.user_id,
+            reviewed_by_role=current_user.role,
+        )
+        return {"success": True, "registration": doc}
+    except prs.RegistrationValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except prs.RegistrationNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except prs.RegistrationStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/admin/provider-requests")
+def admin_list_provider_requests_endpoint(
+    status: str = None,
+    current_user: AuthUser = Depends(require_admin),
+):
+    """List provider suspension / revocation requests (Admin only)."""
+    rows = prs.list_provider_requests(status=status)
+    return {"requests": rows, "total": len(rows)}
+
+
+@router.post("/admin/provider-requests/{request_id}/review")
+def admin_review_provider_request_endpoint(
+    request_id: str,
+    body: dict,
+    current_user: AuthUser = Depends(require_admin),
+):
+    """Review (approve or reject) a suspension or revocation request (Admin only)."""
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Invalid request body.")
+    action = str(body.get("action") or "").strip()
+    notes = str(body.get("notes") or "").strip()
+    try:
+        doc = prs.review_provider_request(
+            request_id=request_id,
+            action=action,
+            review_notes=notes,
+            reviewed_by=current_user.user_id,
+            reviewed_by_role=current_user.role,
+        )
+        return {"success": True, "request": doc}
+    except prs.RegistrationValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except prs.RegistrationNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except prs.RegistrationStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+

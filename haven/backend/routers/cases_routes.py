@@ -114,6 +114,28 @@ def update_case(
                 # the resolution because the in-memory cache purge/audit hiccuped.
                 pass
 
+            # Rapid Response Network RESOLVED hook. The EXISTING authorized case-
+            # resolution action above is the SINGLE source of truth — HAVEN does not
+            # invent a parallel resolution path. Resolve any active dispatch for this
+            # case (idempotent: a no-op when there is none), release the bound
+            # responder, purge the dispatch's live-location room, and push the
+            # resulting notification intents over WebSockets (best-effort). None of
+            # this can fail the case resolution itself.
+            try:
+                from services import dispatch_service
+                from services.dispatch_notify import emit_intents_threadsafe
+                _d, _notify = dispatch_service.resolve_dispatch_for_case(
+                    case_id, current_user.user_id, current_user.role)
+                if _d:
+                    try:
+                        from main import dispatch_manager
+                        dispatch_manager.purge_location(_d.get("dispatch_id"))
+                    except Exception:
+                        pass
+                    emit_intents_threadsafe(_notify)
+            except Exception:
+                pass
+
     # Remaining non-status fields (notes, assigned unit, priority, severity) update directly.
     if all_fields:
         all_fields["updated_at"] = datetime.utcnow()

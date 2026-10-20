@@ -43,6 +43,19 @@ def sos_status_history(): return get_collection('sos_status_history')
 def privacy_records(): return get_collection('privacy_records')
 def ai_analyses(): return get_collection('ai_analyses')
 def authority_accounts(): return get_collection('authority_accounts')
+# Rapid Response Network: human-approved responder dispatch + live response map.
+# Responder identity is a SEPARATE store from authority_accounts (responders are
+# NOT authorities and must not inherit authority/admin RBAC). Dispatch state lives
+# in dedicated collections so the SOS case pipeline is untouched.
+def responders(): return get_collection('responders')
+# Single-use provider setup tokens (SHA-256 digests only; TTL-expired). See
+# services/responder_service.py.
+def responder_setup_tokens(): return get_collection('responder_setup_tokens')
+def dispatch_requests(): return get_collection('dispatch_requests')
+def dispatch_attempts(): return get_collection('dispatch_attempts')
+def response_events(): return get_collection('response_events')
+def provider_registrations(): return get_collection('provider_registrations')
+def provider_requests(): return get_collection('provider_requests')
 # Mental-health module: stored ENCRYPTED at rest, user-controlled, minimized.
 def safety_plans(): return get_collection('mh_safety_plans')
 def mood_journal(): return get_collection('mh_mood_journal')

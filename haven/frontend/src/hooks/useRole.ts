@@ -3,10 +3,18 @@ import { useEffect, useState } from 'react'
 
 export function useRole() {
   const { user, isLoaded } = useUser()
-  const [role, setRole] = useState<'user' | 'authority' | 'admin'>('user')
+  const [role, setRole] = useState<'user' | 'authority' | 'admin' | 'responder'>('user')
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
+      // A field-responder session is tracked separately from the authority token
+      // slot so the two never collide. Role still comes from the verified backend
+      // token on every request — this is only a client-side UI hint.
+      const responderRole = sessionStorage.getItem('haven_responder_role')
+      if (responderRole === 'responder') {
+        setRole('responder')
+        return
+      }
       const authRole = sessionStorage.getItem('haven_authority_role')
       if (authRole === 'authority') {
         setRole('authority')
@@ -35,6 +43,7 @@ export function useRole() {
     role,
     isAuthority: role === 'authority',
     isAdmin: role === 'admin',
-    isUser: role === 'user'
+    isUser: role === 'user',
+    isResponder: role === 'responder'
   }
 }
