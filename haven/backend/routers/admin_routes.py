@@ -441,6 +441,45 @@ def create_provider_endpoint(
     }
 
 
+@router.post("/admin/providers/{responder_id}/reissue-setup-token")
+def reissue_setup_token_endpoint(
+    responder_id: str = Path(...),
+    current_user: AuthUser = Depends(require_admin),
+):
+    """Re-issue a fresh single-use setup token for a provider (Admin only).
+
+    Used when the original token was lost, expired, or never used. The new token
+    invalidates any previously issued (still-valid) token for this provider.
+    Only allowed while the provider has not yet set their own password
+    (password_set=False). Once a provider has credentials, admins cannot
+    silently re-open the setup window — they must revoke and re-provision.
+    """
+    existing = responder_service.get_responder_by_id(responder_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"No provider found for '{responder_id}'.")
+    # Safety gate: don't reissue if the provider already has a working password.
+    if existing.get("password_set", True):
+        raise HTTPException(
+            status_code=409,
+            detail="This provider has already set their password. Reissuing a token would silently override their credentials. Revoke and re-provision instead.",
+        )
+    try:
+        token = responder_service.issue_setup_token(responder_id)
+    except responder_service.SetupStoreUnavailable:
+        raise HTTPException(status_code=503, detail="Provider setup store is unavailable. Try again later.")
+    log_audit(
+        actor_id=current_user.user_id, role=current_user.role,
+        action="PROVIDER_SETUP_TOKEN_REISSUED",
+        metadata={"responder_id": responder_id},
+    )
+    return {
+        "success": True,
+        "responder_id": responder_id,
+        "setup_token": token,
+        "setup_token_expires_in_seconds": responder_service.SETUP_TOKEN_TTL_SECONDS,
+    }
+
+
 # ─── Admin Review of Authority Provider Registrations & Requests ────────────────
 from services import provider_registration_service as prs  # noqa: E402
 

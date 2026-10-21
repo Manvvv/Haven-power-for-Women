@@ -31,6 +31,7 @@ import {
   adminRejectRegistration,
   adminGetProviderRequests,
   adminReviewProviderRequest,
+  adminReissueSetupToken,
   ProviderRegistration,
   ProviderActionRequest,
 } from '@/lib/dispatch'
@@ -117,6 +118,8 @@ export default function AdminPage() {
   const [reviewNotes, setReviewNotes] = useState('')
   const [regsActionBusy, setRegsActionBusy] = useState(false)
   const [issuedToken, setIssuedToken] = useState<{ token: string; unitName: string } | null>(null)
+  const [reissueModal, setReissueModal] = useState<ProviderRegistration | null>(null)
+  const [reissuedToken, setReissuedToken] = useState<{ token: string; unitName: string } | null>(null)
 
   // Filters for audit logs
   const [page, setPage] = useState(1)
@@ -644,6 +647,15 @@ export default function AdminPage() {
                               </button>
                             </div>
                           )}
+                          {reg.status === 'APPROVED' && reg.live_provider && !reg.live_provider.verified && (
+                            <button
+                              onClick={() => { setReissueModal(reg); setReissuedToken(null) }}
+                              className="px-3 py-1 text-xs font-semibold bg-violet-600 text-white rounded-lg hover:bg-violet-700"
+                              title="Provider hasn't set their password yet — reissue a fresh setup token"
+                            >
+                              🔑 Reissue Token
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -843,6 +855,68 @@ export default function AdminPage() {
                   {regsActionBusy ? 'Submitting…' : reviewAction === 'approve' ? 'Approve' : 'Reject'}
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Reissue Setup Token Modal */}
+        {reissueModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-lg">🔑</span>
+                <h3 className="font-bold text-slate-900">Reissue Setup Token</h3>
+                <button onClick={() => { setReissueModal(null); setReissuedToken(null) }} className="ml-auto text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+              </div>
+              {!reissuedToken ? (
+                <>
+                  <p className="text-sm text-slate-600 mb-4">
+                    Generate a fresh one-time setup token for <strong>{reissueModal.unit_name}</strong>.
+                    The previous token (if any) will be invalidated.
+                  </p>
+                  <div className="flex justify-end gap-2">
+                    <button onClick={() => { setReissueModal(null) }} className="px-4 py-2 text-sm border border-slate-200 rounded-lg">Cancel</button>
+                    <button
+                      disabled={regsActionBusy}
+                      onClick={async () => {
+                        if (!reissueModal.live_provider?.responder_id) {
+                          setRegsError('No responder_id found on this registration.')
+                          setReissueModal(null)
+                          return
+                        }
+                        setRegsActionBusy(true)
+                        try {
+                          const res = await adminReissueSetupToken(reissueModal.live_provider.responder_id)
+                          setReissuedToken({ token: res.setup_token, unitName: reissueModal.unit_name })
+                        } catch (e) {
+                          setRegsError(e instanceof Error ? e.message : 'Failed to reissue token.')
+                          setReissueModal(null)
+                        } finally { setRegsActionBusy(false) }
+                      }}
+                      className="px-4 py-2 text-sm font-semibold bg-violet-600 text-white rounded-lg disabled:opacity-60"
+                    >
+                      {regsActionBusy ? 'Generating…' : 'Generate New Token'}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="mb-3">
+                    <div className="text-xs font-semibold text-amber-700 mb-1">New one-time setup token — copy now, not shown again:</div>
+                    <code className="block text-xs bg-slate-50 border border-slate-200 p-3 rounded-lg break-all select-all">{reissuedToken.token}</code>
+                  </div>
+                  <div className="mb-4 p-3 bg-violet-50 border border-violet-200 rounded-lg">
+                    <div className="text-xs font-semibold text-violet-700 mb-1">Provider setup page URL:</div>
+                    <code className="text-xs text-violet-800 break-all select-all">
+                      {typeof window !== 'undefined' ? window.location.origin : ''}/auth/responder-setup
+                    </code>
+                    <div className="text-xs text-violet-600 mt-1">Send both the token and this URL to the provider.</div>
+                  </div>
+                  <div className="flex justify-end">
+                    <button onClick={() => { setReissueModal(null); setReissuedToken(null) }} className="px-4 py-2 text-sm font-semibold bg-violet-600 text-white rounded-lg">Done</button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}

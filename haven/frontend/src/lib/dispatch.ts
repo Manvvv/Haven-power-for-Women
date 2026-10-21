@@ -528,6 +528,19 @@ export async function adminReviewProviderRequest(requestId: string, action: 'app
   return asJson(res)
 }
 
+/** ADMIN only: Re-issue a fresh setup token for an approved-but-password-not-set provider. */
+export async function adminReissueSetupToken(responderId: string): Promise<{
+  success: boolean
+  responder_id: string
+  setup_token: string
+  setup_token_expires_in_seconds: number
+}> {
+  const res = await secureFetch(`/admin/providers/${encodeURIComponent(responderId)}/reissue-setup-token`, {
+    method: 'POST',
+  })
+  return asJson(res)
+}
+
 
 export const markArrived = (id: string) => responderDispatchAction(id, 'arrived')
 export const markHelpProvided = (id: string) => responderDispatchAction(id, 'help-provided')

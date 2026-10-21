@@ -91,6 +91,8 @@ export default function AuthorityPage() {
   const [pass, setPass] = useState('')
   const [passError, setPassError] = useState(false)
   const [authLoading, setAuthLoading] = useState(false)
+  // Track the role from the server-issued token (set on login, cleared on lock).
+  const [sessionRole, setSessionRole] = useState<string>('')
   const [tab, setTab] = useState<Tab>('cases')
   const [cases, setCases] = useState<SOSCase[]>([])
   const [loading, setLoading] = useState(false)
@@ -150,6 +152,12 @@ export default function AuthorityPage() {
     // Restore session if existing authority token found
     const existingToken = getAuthorityToken()
     if (existingToken) {
+      // Restore the role hint so role-gated links (e.g. Admin Panel) appear
+      // without requiring a re-login. The backend still enforces RBAC on every request.
+      const storedRole = typeof window !== 'undefined'
+        ? sessionStorage.getItem('haven_authority_role') || 'authority'
+        : 'authority'
+      setSessionRole(storedRole)
       setUnlocked(true)
     }
 
@@ -240,6 +248,12 @@ export default function AuthorityPage() {
       if (res.ok) {
         const data = await res.json()
         setAuthorityToken(data.access_token)
+        // Persist the role from the server-issued token so role-gated pages
+        // (e.g. /admin) can read it without decoding the JWT client-side.
+        if (typeof window !== 'undefined' && data.role) {
+          sessionStorage.setItem('haven_authority_role', data.role)
+        }
+        setSessionRole(data.role || 'authority')
         setUnlocked(true)
         setPassError(false)
       } else {
@@ -255,6 +269,10 @@ export default function AuthorityPage() {
 
   function handleLock() {
     clearAuthorityToken()
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem('haven_authority_role')
+    }
+    setSessionRole('')
     setUnlocked(false)
     setPass('')
   }
@@ -844,6 +862,13 @@ export default function AuthorityPage() {
             <Link href="/authority/providers?register=true" prefetch={true} aria-label="Register Response Provider for Admin Review" style={{ textDecoration: 'none' }}>
               <button style={{ background: '#047857', border: '1px solid #047857', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', color: 'white', display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.75rem', fontWeight: 700 }}>
                 <UserCheck size={13} /><span>Register Provider</span>
+              </button>
+            </Link>
+          )}
+          {unlocked && sessionRole === 'admin' && (
+            <Link href="/admin" prefetch={true} aria-label="Open Admin & Audit Center" style={{ textDecoration: 'none' }}>
+              <button style={{ background: '#6d28d9', border: '1px solid #6d28d9', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', color: 'white', display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.75rem', fontWeight: 700 }}>
+                <Shield size={13} /><span>Admin Panel</span>
               </button>
             </Link>
           )}

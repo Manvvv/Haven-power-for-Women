@@ -156,6 +156,12 @@ export default function HomePage() {
       <footer style={{ padding: '24px 16px', textAlign: 'center', borderTop: '1px solid rgba(190,24,93,0.1)' }}>
         <p style={{ color: '#8b6b7d', fontSize: 'clamp(0.75rem, 2vw, 0.85rem)' }}>{t('footerText')}</p>
         <p style={{ color: '#be185d', fontSize: 'clamp(0.72rem, 1.8vw, 0.82rem)', marginTop: 6 }}>{t('emergencyFooter')}</p>
+        {/* Operator-only access — not promoted in main navigation */}
+        <p style={{ marginTop: 14, fontSize: '0.7rem', color: '#d1c4cc' }}>
+          <a href="/authority" style={{ color: '#c4a0b0', textDecoration: 'none' }}>
+            System Administration
+          </a>
+        </p>
       </footer>
     </main>
   )
