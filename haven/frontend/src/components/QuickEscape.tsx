@@ -1,9 +1,10 @@
 'use client'
-import React, { useState, useEffect, useRef } from 'react'
-import { usePathname } from 'next/navigation'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { usePathname, useRouter } from 'next/navigation'
 import { Search, Heart, Star, ChefHat, Share2 } from 'lucide-react'
 
 export default function QuickEscape({ children }: { children: React.ReactNode }) {
+  const router = useRouter()
   const pathname = usePathname() || ''
 
   // Quick Disguise is strictly for victim portals (/home, /sos, /voice-sos, /therapy, /legal, /dashboard, etc.).
@@ -19,10 +20,16 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
     pathname.startsWith('/auth/responder')
 
   const [isCamouflaged, setIsCamouflaged] = useState(false)
+
+  // Restore from camouflage and navigate directly to Haven home page
+  const restoreToHome = useCallback(() => {
+    setIsCamouflaged(false)
+    router.push('/home')
+  }, [router])
   // Automatically cancel camouflage when navigating to an excluded operational page
   useEffect(() => {
     if (isExcludedRoute && isCamouflaged) {
-      setIsCamouflaged(false)
+      restoreToHome()
     }
   }, [isExcludedRoute, isCamouflaged])
 
@@ -55,7 +62,11 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
       if (e.key === 'Escape') {
         const now = Date.now()
         if (now - lastEscTimeRef.current < 600) {
-          setIsCamouflaged(prev => !prev)
+          if (isCamouflaged) {
+            restoreToHome()
+          } else {
+            setIsCamouflaged(true)
+          }
           lastEscTimeRef.current = 0
         } else {
           lastEscTimeRef.current = now
@@ -67,7 +78,7 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
         setTypedBuffer(prev => {
           const next = (prev + e.key).slice(-4)
           if (next === SECRET_PIN) {
-            setIsCamouflaged(false)
+            restoreToHome()
             return ''
           }
           return next
@@ -174,6 +185,27 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
     }
   }, [isCamouflaged])
 
+  // Reverse / Browser Back / Phone Swipe-Back interception:
+  // When disguise is open and user navigates back / reverse, close disguise and open /home
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    if (isCamouflaged) {
+      // Push history entry so phone back gesture or browser back button can be intercepted
+      window.history.pushState({ haven_disguise: true }, '', window.location.href)
+
+      const handlePopState = () => {
+        setIsCamouflaged(false)
+        router.push('/home')
+      }
+
+      window.addEventListener('popstate', handlePopState)
+      return () => {
+        window.removeEventListener('popstate', handlePopState)
+      }
+    }
+  }, [isCamouflaged, router])
+
   const toggleIngredient = (index: number) => {
     setCheckedIngredients(prev => ({ ...prev, [index]: !prev[index] }))
   }
@@ -254,7 +286,7 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
           <header style={{ borderBottom: '1px solid #e5e7eb', background: '#ffffff', position: 'sticky', top: 0, zIndex: 10 }}>
             <div style={{ maxWidth: 1000, margin: '0 auto', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div onClick={restoreToHome} title="Back to Home" style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
                   <ChefHat size={26} color="#e11d48" />
                   <span style={{ fontSize: '1.25rem', fontWeight: 800, color: '#111827', letterSpacing: '-0.02em' }}>
                     TasteCraft
@@ -315,7 +347,21 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
           {/* Recipe Content Page */}
           <main style={{ maxWidth: 860, margin: '0 auto', padding: '24px 16px 60px' }}>
             <div style={{ fontSize: '0.8rem', color: '#6b7280', marginBottom: 12 }}>
-              Home &gt; Dinner &gt; Italian &gt; Pasta
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span onClick={restoreToHome} style={{ cursor: 'pointer', color: '#e11d48', fontWeight: 700 }}>
+                  ← Back to Home
+                </span>
+                <span style={{ color: '#9ca3af' }}>•</span>
+                <span onClick={restoreToHome} style={{ cursor: 'pointer', textDecoration: 'underline' }}>
+                  Home
+                </span>
+                <span>&gt;</span>
+                <span>Dinner</span>
+                <span>&gt;</span>
+                <span>Italian</span>
+                <span>&gt;</span>
+                <span style={{ color: '#111827', fontWeight: 600 }}>Pasta</span>
+              </div>
             </div>
 
             <h1 style={{ fontSize: 'clamp(1.8rem, 4vw, 2.4rem)', fontWeight: 800, color: '#111827', lineHeight: 1.2, marginBottom: 12 }}>
@@ -336,12 +382,12 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
             {/* Hero Food Image */}
             <div style={{ borderRadius: 16, overflow: 'hidden', background: '#f3f4f6', height: 320, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 24, position: 'relative' }}>
               <img
-                src="https://images.unsplash.com/photo-1621996346565-e3d5d6281696?w=1000&auto=format&fit=crop&q=80"
+                src="/images/pasta.jpg"
                 alt="Creamy Tuscan Garlic Chicken Pasta"
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 onError={(e) => {
                   // Fallback container if offline
-                  e.currentTarget.style.display = 'none'
+                  e.currentTarget.src = 'https://images.unsplash.com/photo-1608897013039-887f21d8c804?w=1000&auto=format&fit=crop&q=80'
                 }}
               />
               <div style={{ position: 'absolute', bottom: 12, right: 12, background: 'rgba(0,0,0,0.6)', color: 'white', padding: '4px 10px', borderRadius: 20, fontSize: '0.75rem' }}>
@@ -469,7 +515,7 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
               <p>
                 © 2026 TasteCraft Publishing Group. All rights reserved. •{' '}
                 <span
-                  onClick={() => setIsCamouflaged(false)}
+                  onClick={restoreToHome}
                   style={{ cursor: 'pointer', textDecoration: 'underline' }}
                   title="Privacy Policy"
                 >
