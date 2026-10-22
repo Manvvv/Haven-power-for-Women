@@ -16,7 +16,11 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+}
 
 body {
   font-family: 'Georgia', serif;
@@ -180,5 +184,18 @@ body {
   .btn-primary, .btn-secondary {
     padding: 10px 18px;
     font-size: 0.85rem;
+  }
+}
+
+/* Safe area support for notched phones (iPhone X+, Android cutouts) */
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+.safe-top    { padding-top: env(safe-area-inset-top); }
+.safe-left   { padding-left: env(safe-area-inset-left); }
+.safe-right  { padding-right: env(safe-area-inset-right); }
+
+/* Minimum tap-target size on mobile */
+@media (max-width: 768px) {
+  button, [role="button"], a[href] {
+    min-height: 44px;
   }
 }

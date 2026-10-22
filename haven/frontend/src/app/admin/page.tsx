@@ -116,6 +116,8 @@ export default function AdminPage() {
   const [rejectReason, setRejectReason] = useState('')
   const [reviewAction, setReviewAction] = useState<'approve' | 'reject'>('approve')
   const [reviewNotes, setReviewNotes] = useState('')
+  // General data-fetch error shown inline when audit/users/system tabs fail
+  const [fetchError, setFetchError] = useState('')
   const [regsActionBusy, setRegsActionBusy] = useState(false)
   const [issuedToken, setIssuedToken] = useState<{ token: string; unitName: string } | null>(null)
   const [reissueModal, setReissueModal] = useState<ProviderRegistration | null>(null)
@@ -160,42 +162,52 @@ export default function AdminPage() {
 
   const fetchLogs = async () => {
     setLoading(true)
+    setFetchError('')
     try {
       const query = new URLSearchParams({ page: page.toString(), limit: '15' })
       if (actionFilter) query.append('action', actionFilter)
       if (actorFilter) query.append('actor_id', actorFilter)
       if (caseFilter) query.append('case_id', caseFilter)
 
-      const res = await secureFetch(`/admin/audit-logs?${query.toString()}`)
+      const res = await secureFetch('/admin/audit-logs?' + query.toString())
       if (res.ok) {
         const data = await res.json()
         setLogs(data.logs || [])
         setTotalLogs(data.total || 0)
+      } else {
+        setFetchError('Server error ' + res.status + '. Ensure the backend is running.')
       }
     } catch (e) {
       console.error(e)
+      setFetchError('Cannot reach server. Please start the backend (port 8000).')
     } finally {
       setLoading(false)
     }
   }
 
-  const fetchUsers = async () => {
+    const fetchUsers = async () => {
     setLoading(true)
+    setFetchError('')
     try {
       const res = await secureFetch('/admin/users')
       if (res.ok) {
         const data = await res.json()
         setUsers(data.users || [])
+      } else {
+        setFetchError('Server error ' + res.status + '. Ensure the backend is running.')
       }
     } catch (e) {
       console.error(e)
+      setFetchError('Cannot reach server. Please start the backend (port 8000).')
     } finally {
       setLoading(false)
     }
   }
 
+
   const fetchSystemInfo = async () => {
     setLoading(true)
+    setFetchError('')
     try {
       const [statsRes, configRes] = await Promise.all([
         secureFetch('/admin/system-stats'),
@@ -203,8 +215,10 @@ export default function AdminPage() {
       ])
       if (statsRes.ok) setSystemStats(await statsRes.json())
       if (configRes.ok) setSystemConfig(await configRes.json())
+      if (!statsRes.ok || !configRes.ok) setFetchError('Some system data could not be loaded.')
     } catch (e) {
       console.error(e)
+      setFetchError('Cannot reach server. Please start the backend (port 8000).')
     } finally {
       setLoading(false)
     }
@@ -317,8 +331,17 @@ export default function AdminPage() {
           </div>
         )}
 
+        {/* Fetch error banner — shown when audit/users/system load fails (e.g. backend offline) */}
+        {fetchError && (
+          <div className="p-3 mb-4 rounded-xl border border-amber-200 bg-amber-50 flex items-center gap-3 text-sm text-amber-800 font-medium">
+            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+            <span>{fetchError}</span>
+            <button onClick={() => setFetchError('')} className="ml-auto text-amber-500 hover:text-amber-700"><X className="w-4 h-4" /></button>
+          </div>
+        )}
+
         {/* Navigation Tabs */}
-        <div className="flex border-b border-slate-200 mb-6 gap-2">
+        <div className="flex border-b border-slate-200 mb-6 gap-2 overflow-x-auto">
           <button
             onClick={() => setActiveTab('audit')}
             className={`flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${
@@ -591,7 +614,13 @@ export default function AdminPage() {
               <div className="flex items-center gap-2 mb-4">
                 <ClipboardList className="w-5 h-5 text-pink-700" />
                 <h2 className="text-base font-bold text-slate-900">Provider Registration Requests</h2>
-                <span className="ml-auto text-xs text-slate-400">{providerRegs.length} total</span>
+                <div className="ml-auto flex items-center gap-3">
+                  <Link href="/auth/responder-setup" target="_blank" rel="noopener noreferrer"
+                    className="text-xs font-semibold text-violet-600 border border-violet-200 bg-violet-50 px-3 py-1 rounded-lg hover:bg-violet-100 transition-colors flex items-center gap-1.5">
+                    🔗 Provider Setup Page ↗
+                  </Link>
+                  <span className="text-xs text-slate-400">{providerRegs.length} total</span>
+                </div>
               </div>
               {regsLoading ? (
                 <div className="text-center py-8 text-slate-400 text-sm">Loading…</div>

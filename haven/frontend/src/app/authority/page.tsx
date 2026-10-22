@@ -96,6 +96,7 @@ export default function AuthorityPage() {
   const [tab, setTab] = useState<Tab>('cases')
   const [cases, setCases] = useState<SOSCase[]>([])
   const [loading, setLoading] = useState(false)
+  const [fetchError, setFetchError] = useState('')
   const [severityFilter, setSeverityFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [decodeImg, setDecodeImg] = useState('')
@@ -279,16 +280,26 @@ export default function AuthorityPage() {
 
   async function fetchCases() {
     setLoading(true)
+    setFetchError('')
     try {
       const params = new URLSearchParams()
       if (severityFilter) params.set('severity', severityFilter)
       if (statusFilter) params.set('status', statusFilter)
-      const res = await secureFetch(`/cases?${params}`)
-      if (!res.ok) throw new Error('Server error')
+      const res = await secureFetch('/cases?' + params.toString())
+      if (!res.ok) throw new Error('Server error ' + res.status)
       const data = await res.json()
       setCases(data.cases || [])
-    } catch { setCases([]) } finally { setLoading(false) }
+    } catch (err) {
+      setCases([])
+      const msg = err instanceof Error ? err.message : 'Unknown error'
+      if (msg.toLowerCase().includes('failed to fetch') || msg.toLowerCase().includes('networkerror')) {
+        setFetchError('Cannot reach HAVEN backend. Ensure the server is running on port 8000.')
+      } else {
+        setFetchError(msg)
+      }
+    } finally { setLoading(false) }
   }
+
 
   async function updateCaseStatus(caseId: string, status: string) {
     try {
@@ -824,7 +835,7 @@ export default function AuthorityPage() {
   return (
     <div style={{ minHeight: '100vh', background: '#f8f4f6' }}>
       {/* Header */}
-      <div style={{ background: '#1a0a12', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div style={{ background: '#1a0a12', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
          <Link href="/" prefetch={true}><button aria-label="Go back to home" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#f472b6', padding: 4 }}><ArrowLeft size={18} /></button></Link>
           <Shield size={20} style={{ color: '#f472b6' }} />
@@ -833,7 +844,7 @@ export default function AuthorityPage() {
             <div style={{ fontSize: '0.62rem', color: '#8b6b7d' }}>Officers Only</div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           {unlocked && (
             <div title={`${unreadCount} unread notification${unreadCount !== 1 ? 's' : ''}`} style={{ position: 'relative', display: 'flex', alignItems: 'center', color: '#f472b6', padding: 4 }}>
               <Bell size={17} />
@@ -903,6 +914,18 @@ export default function AuthorityPage() {
       </div>
 
       <div style={{ maxWidth: 1100, margin: '0 auto', padding: 'clamp(16px,3vw,28px) 16px' }}>
+        {/* Backend connectivity error banner */}
+        {fetchError && (
+          <div style={{ background: '#fef3c7', border: '1px solid #fbbf24', borderRadius: 12, padding: '12px 16px', marginBottom: 16, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <span style={{ fontSize: '1.1rem' }}>⚠️</span>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#92400e' }}>Backend Unreachable</div>
+              <div style={{ fontSize: '0.82rem', color: '#78350f', marginTop: 2 }}>{fetchError}</div>
+            </div>
+            <button onClick={() => setFetchError('')} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#b45309', fontSize: '1.1rem', padding: 4 }}>✕</button>
+          </div>
+        )}
+
         {/* Cases Tab */}
         {tab === 'cases' && (
           <div>

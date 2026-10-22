@@ -16,12 +16,12 @@ export default function HomePage() {
     <main className="min-h-screen" style={{ background: 'linear-gradient(135deg, #fdf2f8 0%, #fce7f3 40%, #f5f0ff 100%)' }}>
       {/* ── Nav ── */}
       <nav style={{ background: 'rgba(253,242,248,0.9)', backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(190,24,93,0.1)', position: 'sticky', top: 0, zIndex: 50 }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto', padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ maxWidth: 1200, margin: '0 auto', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Shield size={24} style={{ color: '#be185d' }} />
             <span style={{ fontSize: '1.25rem', fontWeight: 700, color: '#be185d', fontFamily: 'Georgia, serif' }}>{t('appName')}</span>
           </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             {/* Responder portal — always visible, distinct from user / authority login */}
             <Link href="/responder">
               <button
@@ -36,7 +36,7 @@ export default function HomePage() {
                 onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = '#eff6ff' }}
               >
                 <Radio size={14} />
-                Responder Sign In
+                <span className="hidden sm:inline">Responder Sign In</span>
               </button>
             </Link>
             <LanguageSelector compact />

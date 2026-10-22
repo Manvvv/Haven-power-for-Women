@@ -1,11 +1,34 @@
 'use client'
 import React, { useState, useEffect, useRef } from 'react'
-import { Search, Heart, Star, Clock, ChefHat, ShoppingBag, Eye, X, BookOpen, Share2 } from 'lucide-react'
+import { usePathname } from 'next/navigation'
+import { Search, Heart, Star, ChefHat, Share2 } from 'lucide-react'
 
 export default function QuickEscape({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname() || ''
+
+  // Quick Disguise is strictly for victim portals (/home, /sos, /voice-sos, /therapy, /legal, /dashboard, etc.).
+  // It is explicitly removed on:
+  // 1. Root calculator camouflage page ('/')
+  // 2. Responder login and responder field portal ('/responder', '/auth/responder-setup')
+  // 3. Authority portal and all pages after authority login ('/authority', '/authority/providers', '/authority/rapid-response', '/admin')
+  const isExcludedRoute =
+    pathname === '/' ||
+    pathname.startsWith('/responder') ||
+    pathname.startsWith('/authority') ||
+    pathname.startsWith('/admin') ||
+    pathname.startsWith('/auth/responder')
+
   const [isCamouflaged, setIsCamouflaged] = useState(false)
+  // Automatically cancel camouflage when navigating to an excluded operational page
+  useEffect(() => {
+    if (isExcludedRoute && isCamouflaged) {
+      setIsCamouflaged(false)
+    }
+  }, [isExcludedRoute, isCamouflaged])
+
   const [typedBuffer, setTypedBuffer] = useState('')
   const [checkedIngredients, setCheckedIngredients] = useState<Record<number, boolean>>({})
+  const [isMobile, setIsMobile] = useState(false)
 
   const lastEscTimeRef = useRef<number>(0)
   const prevTitleRef = useRef<string | null>(null)
@@ -14,8 +37,19 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
   // return gesture during setup, not from the camouflage page itself.
   const SECRET_PIN = '1810'
 
-  // Double-tap Escape key or type secret PIN '1810' to toggle
+  // Detect mobile width
   useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 640)
+    checkMobile()
+    window.addEventListener('resize', checkMobile)
+    return () => window.removeEventListener('resize', checkMobile)
+  }, [])
+
+  // Double-tap Escape key, secret PIN '1810', or 6-7 shake strokes to disguise
+  useEffect(() => {
+    // Completely disable all listeners on excluded routes (responder, authority, admin)
+    if (isExcludedRoute) return
+
     const handleKeyDown = (e: KeyboardEvent) => {
       // Check double-tap Escape key
       if (e.key === 'Escape') {
@@ -41,23 +75,70 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
       }
     }
 
-    // Shake gesture detection for mobile devices
-    let lastX = 0, lastY = 0, lastZ = 0, lastShake = 0
+    // Shake gesture detection for mobile devices:
+    // Requires 6-7 deliberate, rapid back-and-forth shake strokes.
+    // Accidental movements (like picking up the phone or setting it down on a table)
+    // generate only 1 brief motion impulse or smooth gradual delta, which is ignored
+    // and automatically resets after 1.4 seconds of no shaking.
+    let lastX = 0, lastY = 0, lastZ = 0
+    let lastSampleTime = 0
+    let lastShakeStrokeTime = 0
+    let shakeCount = 0
+
     const handleDeviceMotion = (e: DeviceMotionEvent) => {
-      const acc = e.accelerationIncludingGravity
+      if (isCamouflaged) return
+
+      const acc = e.accelerationIncludingGravity || e.acceleration
       if (!acc) return
-      const curTime = Date.now()
-      if (curTime - lastShake > 1000) {
-        const diffX = Math.abs((acc.x || 0) - lastX)
-        const diffY = Math.abs((acc.y || 0) - lastY)
-        const diffZ = Math.abs((acc.z || 0) - lastZ)
-        if (diffX + diffY + diffZ > 28) {
-          setIsCamouflaged(true)
-          lastShake = curTime
+
+      const curX = acc.x ?? 0
+      const curY = acc.y ?? 0
+      const curZ = acc.z ?? 0
+      const now = Date.now()
+
+      // Initial baseline
+      if (lastSampleTime === 0) {
+        lastX = curX
+        lastY = curY
+        lastZ = curZ
+        lastSampleTime = now
+        return
+      }
+
+      const timeDelta = now - lastSampleTime
+      // Minimum sample window of 30ms to normalize across high-refresh sensors (60Hz-120Hz)
+      if (timeDelta < 30) return
+
+      const diffX = Math.abs(curX - lastX)
+      const diffY = Math.abs(curY - lastY)
+      const diffZ = Math.abs(curZ - lastZ)
+      const speed = diffX + diffY + diffZ
+
+      lastX = curX
+      lastY = curY
+      lastZ = curZ
+      lastSampleTime = now
+
+      // If more than 1.4 seconds passed since the last shake stroke, reset count
+      if (lastShakeStrokeTime > 0 && now - lastShakeStrokeTime > 1400) {
+        shakeCount = 0
+      }
+
+      // A deliberate shake stroke produces a rapid delta speed > 20
+      if (speed > 20) {
+        // Enforce at least 180ms debounce between counted shake strokes
+        // (prevents a single continuous swing from triggering multiple counts)
+        if (now - lastShakeStrokeTime > 180) {
+          shakeCount++
+          lastShakeStrokeTime = now
+
+          // Trigger only when user shakes 6-7 times consecutively
+          if (shakeCount >= 6) {
+            setIsCamouflaged(true)
+            shakeCount = 0
+            lastShakeStrokeTime = 0
+          }
         }
-        lastX = acc.x || 0
-        lastY = acc.y || 0
-        lastZ = acc.z || 0
       }
     }
 
@@ -72,8 +153,7 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
         window.removeEventListener('devicemotion', handleDeviceMotion)
       }
     }
-  }, [])
-
+  }, [isExcludedRoute, isCamouflaged])
   // Discreet-state side effects: mask the browser tab title and give a subtle,
   // silent tactile confirmation when the disguise engages. This keeps the real
   // app name out of the tab / recent-apps preview and confirms activation
@@ -98,39 +178,62 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
     setCheckedIngredients(prev => ({ ...prev, [index]: !prev[index] }))
   }
 
+  // On excluded operational routes (responder login, authority dashboard, admin),
+  // render children directly without any Quick Disguise button or disguise overlay.
+  if (isExcludedRoute) {
+    return <>{children}</>
+  }
+
   return (
     <>
+      {/* CSS keyframes for pulse animation */}
+      <style>{`
+        @keyframes havenPulseRing {
+          0% { box-shadow: 0 0 0 0 rgba(190, 24, 93, 0.4), 0 4px 16px rgba(0,0,0,0.2); }
+          70% { box-shadow: 0 0 0 8px rgba(190, 24, 93, 0), 0 4px 16px rgba(0,0,0,0.2); }
+          100% { box-shadow: 0 0 0 0 rgba(190, 24, 93, 0), 0 4px 16px rgba(0,0,0,0.2); }
+        }
+        .haven-quick-disguise-btn {
+          animation: havenPulseRing 2.4s ease-out infinite;
+        }
+        .haven-quick-disguise-btn:hover {
+          animation: none;
+          box-shadow: 0 0 0 3px rgba(190, 24, 93, 0.35), 0 6px 20px rgba(0,0,0,0.3) !important;
+        }
+      `}</style>
+
       {/* Real app content (kept alive in background for uninterrupted Voice SOS / GPS) */}
       <div style={{ display: isCamouflaged ? 'none' : 'block' }}>
         {children}
 
-        {/* Discreet Floating Quick Escape Button */}
+        {/* Discreet Floating Quick Escape Button — improved with pulse & safe-area */}
         <button
           onClick={() => setIsCamouflaged(true)}
-          title="Quick Disguise"
+          title="Tap to disguise this page"
           aria-label="Quick Disguise"
+          className="haven-quick-disguise-btn"
           style={{
             position: 'fixed',
-            bottom: '18px',
-            left: '18px',
+            bottom: 'max(18px, env(safe-area-inset-bottom))',
+            left: 'max(18px, env(safe-area-inset-left))',
             zIndex: 99999,
-            background: 'rgba(26, 10, 18, 0.85)',
+            background: 'rgba(26, 10, 18, 0.88)',
             backdropFilter: 'blur(10px)',
             color: '#fdf2f8',
             border: '1px solid rgba(190, 24, 93, 0.3)',
             borderRadius: '30px',
-            padding: '8px 14px',
-            fontSize: '0.74rem',
+            padding: isMobile ? '10px 16px' : '8px 14px',
+            minHeight: 44,
+            fontSize: '0.8rem',
             fontWeight: 700,
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
             gap: '6px',
-            boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
             transition: 'all 0.2s',
           }}
         >
-          <span style={{ fontSize: '0.85rem' }}>⚡</span> Quick Disguise
+          <span style={{ fontSize: '0.9rem' }}>⚡</span> Quick Disguise
         </button>
       </div>
 
@@ -157,12 +260,15 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
                     TasteCraft
                   </span>
                 </div>
-                <nav style={{ display: 'flex', gap: 16, fontSize: '0.88rem', color: '#4b5563', fontWeight: 500 }}>
-                  <span style={{ color: '#e11d48', fontWeight: 700, cursor: 'pointer' }}>Recipes</span>
-                  <span style={{ cursor: 'pointer' }}>Quick Dinners</span>
-                  <span style={{ cursor: 'pointer' }}>Baking</span>
-                  <span style={{ cursor: 'pointer' }}>Meal Plans</span>
-                </nav>
+                {/* Hide nav links on mobile */}
+                {!isMobile && (
+                  <nav style={{ display: 'flex', gap: 16, fontSize: '0.88rem', color: '#4b5563', fontWeight: 500 }}>
+                    <span style={{ color: '#e11d48', fontWeight: 700, cursor: 'pointer' }}>Recipes</span>
+                    <span style={{ cursor: 'pointer' }}>Quick Dinners</span>
+                    <span style={{ cursor: 'pointer' }}>Baking</span>
+                    <span style={{ cursor: 'pointer' }}>Meal Plans</span>
+                  </nav>
+                )}
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -170,14 +276,16 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
                   <Search size={16} style={{ position: 'absolute', left: 10, color: '#9ca3af' }} />
                   <input
                     type="text"
-                    placeholder="Search 15,000+ recipes..."
+                    placeholder="Search recipes..."
                     style={{
                       padding: '7px 12px 7px 32px',
                       borderRadius: 20,
                       border: '1px solid #d1d5db',
                       fontSize: '0.82rem',
                       outline: 'none',
-                      width: 220,
+                      width: isMobile ? '100%' : 220,
+                      minWidth: 0,
+                      maxWidth: '100%',
                     }}
                   />
                 </div>
@@ -193,6 +301,9 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
                     cursor: 'pointer',
                     color: '#9ca3af',
                     padding: 4,
+                    minHeight: 44,
+                    display: 'flex',
+                    alignItems: 'center',
                   }}
                 >
                   <Heart size={20} />
@@ -239,7 +350,7 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
             </div>
 
             {/* Author bar */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #e5e7eb', marginBottom: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #e5e7eb', marginBottom: 24, flexWrap: 'wrap', gap: 10 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <div style={{ width: 40, height: 40, borderRadius: '50%', background: '#fee2e2', color: '#e11d48', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '0.9rem' }}>
                   EL
@@ -316,7 +427,7 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
                   <strong>Sear the chicken:</strong> Heat olive oil in a large skillet over medium-high heat. Season chicken with salt, pepper, and Italian herbs. Cook 5 minutes per side until golden brown and cooked through. Transfer to a cutting board.
                 </li>
                 <li>
-                  <strong>Sauté garlic & sun-dried tomatoes:</strong> In the same skillet, add minced garlic and sun-dried tomatoes. Sauté for 1 minute until fragrant.
+                  <strong>Sauté garlic &amp; sun-dried tomatoes:</strong> In the same skillet, add minced garlic and sun-dried tomatoes. Sauté for 1 minute until fragrant.
                 </li>
                 <li>
                   <strong>Make the cream sauce:</strong> Pour in heavy cream and chicken broth. Bring to a gentle simmer, then stir in grated parmesan cheese until smooth and velvety.
@@ -325,6 +436,31 @@ export default function QuickEscape({ children }: { children: React.ReactNode })
                   <strong>Toss and serve:</strong> Fold in fresh baby spinach until just wilted. Toss in the drained pasta and sliced chicken. Serve hot with extra parmesan!
                 </li>
               </ol>
+            </div>
+
+            {/* Related Recipes — More convincing disguise content */}
+            <div style={{ marginTop: 40 }}>
+              <h2 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111827', marginBottom: 16 }}>
+                You Might Also Love
+              </h2>
+              <div style={{ display: 'flex', gap: 16, overflowX: 'auto', paddingBottom: 8 }}>
+                {[
+                  { title: 'Lemon Herb Roasted Salmon', time: '32 mins', rating: '4.8', gradient: 'linear-gradient(135deg, #fde68a, #fb923c)' },
+                  { title: 'Classic Beef Stroganoff', time: '45 mins', rating: '4.7', gradient: 'linear-gradient(135deg, #c4b5fd, #7c3aed)' },
+                  { title: 'Thai Basil Fried Rice', time: '20 mins', rating: '4.9', gradient: 'linear-gradient(135deg, #6ee7b7, #059669)' },
+                ].map((recipe, i) => (
+                  <div key={i} style={{ minWidth: 180, background: '#f9fafb', borderRadius: 12, border: '1px solid #e5e7eb', overflow: 'hidden', cursor: 'pointer', flexShrink: 0 }}>
+                    <div style={{ height: 110, background: recipe.gradient }} />
+                    <div style={{ padding: '10px 12px' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#111827', lineHeight: 1.3, marginBottom: 6 }}>{recipe.title}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.75rem', color: '#6b7280' }}>
+                        <span>⏱ {recipe.time}</span>
+                        <span style={{ color: '#f59e0b', fontWeight: 700 }}>⭐ {recipe.rating}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
 
             {/* Neutral publisher footer. The restore affordance below is left
