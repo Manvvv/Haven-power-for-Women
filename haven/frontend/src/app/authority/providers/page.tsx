@@ -206,7 +206,7 @@ export default function ProvidersPage() {
 
   return (
     <div style={{ minHeight: '100vh', background: C.bg, color: C.text, fontFamily: 'system-ui, sans-serif' }}>
-      <header style={{ background: C.panel, borderBottom: `1px solid ${C.line}`, padding: '14px 20px', display: 'flex', alignItems: 'center', gap: 12 }}>
+      <header style={{ background: C.panel, borderBottom: `1px solid ${C.line}`, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
         <Link href="/authority" aria-label="Back to Authority Dashboard" style={{ color: C.muted, display: 'flex' }}>
           <ArrowLeft size={18} />
         </Link>

@@ -835,7 +835,7 @@ export default function AuthorityPage() {
   return (
     <div style={{ minHeight: '100vh', background: '#f8f4f6' }}>
       {/* Header */}
-      <div style={{ background: '#1a0a12', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+      <div style={{ background: '#1a0a12', padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
          <Link href="/" prefetch={true}><button aria-label="Go back to home" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#f472b6', padding: 4 }}><ArrowLeft size={18} /></button></Link>
           <Shield size={20} style={{ color: '#f472b6' }} />
@@ -844,7 +844,7 @@ export default function AuthorityPage() {
             <div style={{ fontSize: '0.62rem', color: '#8b6b7d' }}>Officers Only</div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', overflowX: 'auto', flexWrap: 'nowrap', maxWidth: '100%', paddingBottom: 2, scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}>
           {unlocked && (
             <div title={`${unreadCount} unread notification${unreadCount !== 1 ? 's' : ''}`} style={{ position: 'relative', display: 'flex', alignItems: 'center', color: '#f472b6', padding: 4 }}>
               <Bell size={17} />

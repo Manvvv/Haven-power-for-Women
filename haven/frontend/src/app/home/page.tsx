@@ -1,8 +1,9 @@
 'use client'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { UserButton, SignedIn, SignedOut } from '@clerk/nextjs'
-import { Shield, MessageCircle, Scale, Eye, ChevronRight, Heart, Mic, Radio } from 'lucide-react'
+import { Shield, MessageCircle, Scale, Eye, ChevronRight, Heart, Mic, Radio, Menu, X, ArrowRight } from 'lucide-react'
 import { useLang, LanguageSelector } from '@/components/LanguageContext'
 import { useHavenAuth } from '@/hooks/useHavenAuth'
 
@@ -10,20 +11,35 @@ export default function HomePage() {
   const router = useRouter()
   const { t } = useLang()
   useHavenAuth()
-  const navigate = (href: string) => router.push(href)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const navigate = (href: string) => { setMobileMenuOpen(false); router.push(href); }
+
+  // Close mobile drawer on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileMenuOpen(false)
+    }
+    if (mobileMenuOpen) {
+      window.addEventListener('keydown', handleKeyDown)
+    }
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [mobileMenuOpen])
 
   return (
     <main className="min-h-screen" style={{ background: 'linear-gradient(135deg, #fdf2f8 0%, #fce7f3 40%, #f5f0ff 100%)' }}>
       {/* ── Nav ── */}
-      <nav style={{ background: 'rgba(253,242,248,0.9)', backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(190,24,93,0.1)', position: 'sticky', top: 0, zIndex: 50 }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Shield size={24} style={{ color: '#be185d' }} />
-            <span style={{ fontSize: '1.25rem', fontWeight: 700, color: '#be185d', fontFamily: 'Georgia, serif' }}>{t('appName')}</span>
-          </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {/* Responder portal — always visible, distinct from user / authority login */}
-            <Link href="/responder">
+      <nav style={{ background: 'rgba(253,242,248,0.95)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', borderBottom: '1px solid rgba(190,24,93,0.12)', position: 'sticky', top: 0, zIndex: 50 }}>
+        <div style={{ maxWidth: 1200, margin: '0 auto', padding: '0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', height: 62 }}>
+          {/* Logo Brand */}
+          <Link href="/home" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none' }}>
+            <Shield size={24} style={{ color: '#be185d', flexShrink: 0 }} />
+            <span style={{ fontSize: '1.25rem', fontWeight: 700, color: '#be185d', fontFamily: 'Georgia, serif', whiteSpace: 'nowrap' }}>{t('appName')}</span>
+          </Link>
+
+          {/* Desktop Navigation (>= 768px) */}
+          <div className="hidden md:flex" style={{ gap: 10, alignItems: 'center' }}>
+            {/* Responder portal */}
+            <Link href="/responder" style={{ textDecoration: 'none' }}>
               <button
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: 6,
@@ -36,28 +52,211 @@ export default function HomePage() {
                 onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = '#eff6ff' }}
               >
                 <Radio size={14} />
-                <span className="hidden sm:inline">Responder Sign In</span>
+                <span>Responder Sign In</span>
               </button>
             </Link>
+
             <LanguageSelector compact />
+
             <SignedIn>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <Link href="/dashboard">
-                  <button className="btn-primary" style={{ padding: '9px 18px', fontSize: '0.82rem' }}>{t('dashboard')}</button>
+                <Link href="/dashboard" style={{ textDecoration: 'none' }}>
+                  <button className="btn-primary" style={{ padding: '8px 18px', fontSize: '0.82rem' }}>{t('dashboard')}</button>
                 </Link>
                 <UserButton afterSignOutUrl="/" />
               </div>
             </SignedIn>
             <SignedOut>
-              <Link href="/sign-in">
-                <button className="btn-secondary" style={{ padding: '9px 16px', fontSize: '0.82rem' }}>{t('signIn')}</button>
+              <Link href="/sign-in" style={{ textDecoration: 'none' }}>
+                <button className="btn-secondary" style={{ padding: '8px 16px', fontSize: '0.82rem' }}>{t('signIn')}</button>
               </Link>
-              <Link href="/sign-up">
-                <button className="btn-primary" style={{ padding: '9px 16px', fontSize: '0.82rem' }}>{t('signUp')}</button>
+              <Link href="/sign-up" style={{ textDecoration: 'none' }}>
+                <button className="btn-primary" style={{ padding: '8px 16px', fontSize: '0.82rem' }}>{t('signUp')}</button>
               </Link>
             </SignedOut>
           </div>
+
+          {/* Mobile Right Controls (< 768px): Always fits in 1 clean line without wrapping */}
+          <div className="flex md:hidden" style={{ alignItems: 'center', gap: 8 }}>
+            <LanguageSelector compact />
+
+            <SignedIn>
+              <Link href="/dashboard" style={{ textDecoration: 'none' }}>
+                <button
+                  style={{
+                    padding: '6px 12px', fontSize: '0.78rem', fontWeight: 700,
+                    color: 'white', background: '#be185d',
+                    border: 'none', borderRadius: 20, cursor: 'pointer',
+                  }}
+                >
+                  {t('dashboard')}
+                </button>
+              </Link>
+              <UserButton afterSignOutUrl="/" />
+            </SignedIn>
+
+            <SignedOut>
+              <Link href="/sign-in" style={{ textDecoration: 'none' }}>
+                <button
+                  style={{
+                    padding: '6px 12px', fontSize: '0.78rem', fontWeight: 600,
+                    color: '#be185d', background: 'rgba(190,24,93,0.06)',
+                    border: '1px solid rgba(190,24,93,0.2)', borderRadius: 20, cursor: 'pointer',
+                  }}
+                >
+                  {t('signIn')}
+                </button>
+              </Link>
+            </SignedOut>
+
+            {/* Mobile Menu Hamburger Toggle */}
+            <button
+              onClick={() => setMobileMenuOpen(prev => !prev)}
+              aria-label={mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
+              style={{
+                background: mobileMenuOpen ? 'rgba(190,24,93,0.1)' : 'transparent',
+                border: '1px solid rgba(190,24,93,0.18)',
+                borderRadius: 8,
+                padding: '6px 8px',
+                cursor: 'pointer',
+                color: '#be185d',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 0.2s',
+              }}
+            >
+              {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+            </button>
+          </div>
         </div>
+
+        {/* Mobile Dropdown Drawer */}
+        {mobileMenuOpen && (
+          <div
+            className="haven-nav-drawer"
+            style={{
+              background: 'rgba(255, 255, 255, 0.98)',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+              borderBottom: '1px solid rgba(190,24,93,0.15)',
+              boxShadow: '0 16px 36px rgba(190,24,93,0.12)',
+              padding: '16px',
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {/* Emergency Quick Action */}
+              <div
+                onClick={() => navigate('/sos')}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '11px 14px', borderRadius: 12,
+                  background: '#fdf2f8', border: '1px solid rgba(190,24,93,0.2)',
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ width: 34, height: 34, borderRadius: 10, background: '#fee2e2', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#be185d' }}>
+                  <Eye size={18} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#be185d' }}>{t('discreeSOS')}</div>
+                  <div style={{ fontSize: '0.74rem', color: '#8b6b7d' }}>{t('discreSOSDesc')}</div>
+                </div>
+                <ChevronRight size={16} color="#be185d" />
+              </div>
+
+              {/* Navigation Items Grid */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 4 }}>
+                <div
+                  onClick={() => navigate('/voice-sos')}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '10px 12px', borderRadius: 10,
+                    background: '#f5f0ff', border: '1px solid rgba(124,58,237,0.15)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Mic size={16} color="#7c3aed" />
+                  <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#5b21b6' }}>Voice SOS</span>
+                </div>
+
+                <div
+                  onClick={() => navigate('/therapy')}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '10px 12px', borderRadius: 10,
+                    background: '#fdf2f8', border: '1px solid rgba(219,39,119,0.15)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Heart size={16} color="#db2777" />
+                  <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#9d174d' }}>{t('mentalHealth')}</span>
+                </div>
+
+                <div
+                  onClick={() => navigate('/legal')}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '10px 12px', borderRadius: 10,
+                    background: '#faf5ff', border: '1px solid rgba(157,23,77,0.15)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Scale size={16} color="#9d174d" />
+                  <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#701a75' }}>{t('legalGuidance')}</span>
+                </div>
+
+                <div
+                  onClick={() => navigate('/authority')}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '10px 12px', borderRadius: 10,
+                    background: '#fce7f3', border: '1px solid rgba(190,24,93,0.15)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <MessageCircle size={16} color="#be185d" />
+                  <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#9d174d' }}>Authority</span>
+                </div>
+              </div>
+
+              {/* Responder Portal Row */}
+              <div
+                onClick={() => navigate('/responder')}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '10px 14px', borderRadius: 10,
+                  background: '#eff6ff', border: '1px solid #bfdbfe',
+                  cursor: 'pointer', marginTop: 4,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Radio size={16} color="#1d4ed8" />
+                  <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#1d4ed8' }}>Responder Portal Sign In</span>
+                </div>
+                <ChevronRight size={16} color="#1d4ed8" />
+              </div>
+
+              {/* Sign Up CTA if signed out */}
+              <SignedOut>
+                <div style={{ marginTop: 6, paddingTop: 10, borderTop: '1px solid rgba(190,24,93,0.1)' }}>
+                  <Link href="/sign-up" onClick={() => setMobileMenuOpen(false)} style={{ textDecoration: 'none' }}>
+                    <button
+                      className="btn-primary"
+                      style={{
+                        width: '100%', padding: '10px 16px', fontSize: '0.88rem',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                      }}
+                    >
+                      <span>{t('signUp')}</span>
+                      <ArrowRight size={16} />
+                    </button>
+                  </Link>
+                </div>
+              </SignedOut>
+            </div>
+          </div>
+        )}
       </nav>
 
       {/* ── Hero ── */}
