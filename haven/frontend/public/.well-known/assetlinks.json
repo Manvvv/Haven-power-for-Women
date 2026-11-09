@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.haven.android",
+      "sha256_cert_fingerprints": [
+        "84:E7:3D:E4:6A:41:C3:DB:0B:78:36:F2:DB:74:FE:4B:90:57:A5:BB:A1:E8:0A:0B:D3:44:38:58:32:6F:5B:99"
+      ]
+    }
+  }
+]

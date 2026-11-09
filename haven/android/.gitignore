@@ -1,0 +1,18 @@
+# HAVEN Android — .gitignore
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+!debug.keystore
+google-services.json
+haven_pending_queue.xml
+haven_secure_prefs.xml
+haven_monitoring_prefs/

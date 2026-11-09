@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  HAVEN Android — AndroidManifest.xml
+  ====================================
+  Declares all permissions, the foreground service, and the WorkManager worker
+  needed for background Shake-to-SOS monitoring.
+
+  Permission rationale (required to show to users before requesting at runtime):
+
+  FOREGROUND_SERVICE           — Required to call startForeground() and keep the
+                                 ShakeDetectionService alive with a visible notification
+                                 while the screen is locked.
+
+  FOREGROUND_SERVICE_LOCATION  — Android 14+ (API 34) foreground service type.
+                                 Must be declared when a foreground service accesses
+                                 location. We request this so the service may obtain
+                                 GPS when triggered. Requires ACCESS_FINE_LOCATION at
+                                 runtime.
+
+  ACCESS_FINE_LOCATION         — Needed to obtain the best GPS fix via
+                                 FusedLocationProviderClient when SOS is triggered.
+                                 The user must grant this before the service can
+                                 include a live location in the emergency request.
+
+  ACCESS_COARSE_LOCATION       — Fallback if the user denies fine location. The
+                                 backend records this as a COARSE fix.
+
+  POST_NOTIFICATIONS           — Android 13+ (API 33). Required to display the
+                                 mandatory foreground-service notification and the
+                                 SOS alert notification. Without it the persistent
+                                 monitoring notification cannot be shown, so SOS
+                                 monitoring cannot start on Android 13+.
+
+  INTERNET                     — Needed to reach the HAVEN FastAPI backend.
+
+  RECEIVE_BOOT_COMPLETED       — Optional. Allows the app to offer monitoring
+                                 restart after device reboot (the user must re-enable
+                                 monitoring explicitly after reboot — see
+                                 MonitoringStatusRepository). NOT used to restart
+                                 the service automatically without user consent.
+
+  VIBRATE                      — Vibrate the phone when SOS is confirmed so the
+                                 user has tactile feedback in discreet mode.
+
+  NOTE: We do NOT request:
+    ACCESS_BACKGROUND_LOCATION — The service is foreground; it does not require
+                                  background-location permission. GPS is only read
+                                  after the user triggers SOS while the foreground
+                                  service is already running.
+    USE_EXACT_ALARM             — WorkManager handles offline retry with
+                                  inexact scheduling appropriate for a retry queue.
+    BIND_ACCESSIBILITY_SERVICE  — Not used. No Accessibility workarounds.
+    DEVICE_ADMIN                — Not used.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ─── Permissions ─────────────────────────────────────── -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!--
+      FOREGROUND_SERVICE_LOCATION is required on Android 14+ when a foreground
+      service accesses location. Declared here so the platform recognises the type;
+      runtime ACCESS_FINE_LOCATION permission is still required separately.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Required on API 33+ to display the persistent monitoring notification. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- WAKE_LOCK: holds a partial wakelock so the CPU stays awake for the
+         sensor callback while the screen is locked. Released when service stops. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Accelerometer feature — soft requirement; app works without it but
+         shake detection is unavailable. -->
+    <uses-feature
+        android:name="android.hardware.sensor.accelerometer"
+        android:required="false" />
+
+    <application
+        android:name=".HavenApplication"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.HavenAndroid"
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config">
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             TWA — Trusted Web Activity
+             ════════════════════════════════════════════════════════════════
+             TwaLauncherActivity is the MAIN launcher entry point in TWA mode.
+             It opens https://haven-your-own-voice.vercel.app/ in a full-screen
+             Chrome Trusted Web Activity — same experience as the browser, no
+             browser toolbar.
+
+             The VIEW intent-filter with the HAVEN origin is required so Chrome
+             can verify Digital Asset Links and grant TWA mode.
+
+             android:exported="true" — must be true for LAUNCHER category.
+        -->
+        <activity
+            android:name=".twa.TwaLauncherActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.HavenAndroid">
+            <!-- Primary launcher intent -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- TWA origin verification intent-filter (required for Digital Asset Links) -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="haven-your-own-voice.vercel.app" />
+            </intent-filter>
+        </activity>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             MonitorControlActivity
+             ════════════════════════════════════════════════════════════════
+             Standalone native activity for Shake-to-SOS monitor controls.
+             Launched from the foreground service notification or from the
+             app info screen. NOT the primary launcher.
+        -->
+        <activity
+            android:name=".twa.MonitorControlActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize">
+            <!-- Deep link from the SOS notification -->
+            <intent-filter>
+                <action android:name="com.haven.android.ACTION_OPEN_SOS_STATUS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Legacy MainActivity (kept for backward compatibility and direct deep links).
+             No longer the primary launcher — TwaLauncherActivity is. -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
+          ShakeDetectionService
+          ─────────────────────
+          A foreground service that monitors the accelerometer via SensorManager
+          while the screen is locked.
+
+          android:foregroundServiceType="location"
+            Declares this service will access location (FusedLocationProvider) when
+            SOS is triggered. Required on Android 10+ for location access in a
+            foreground service; mandatory on Android 14+ to avoid SecurityException.
+
+          android:stopWithTask="false"
+            Keeps the service running even when the user removes the app from Recents.
+            This is the documented approach for foreground services the user has
+            explicitly enabled (e.g., navigation, fitness, music playback).
+            The service updates MonitoringStatusRepository when stopped via
+            onDestroy() so the UI never claims monitoring is active when it is not.
+
+          android:exported="false"
+            Service cannot be started by other apps.
+        -->
+        <service
+            android:name=".service.ShakeDetectionService"
+            android:exported="false"
+            android:foregroundServiceType="location"
+            android:stopWithTask="false" />
+
+        <!--
+          BootReceiver — re-prompt the user to re-enable monitoring after reboot.
+          Does NOT silently restart the service; the user must explicitly re-enable.
+        -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Suppress WorkManager's auto-merged InitializationProvider.
+             HavenApplication implements Configuration.Provider (on-demand init),
+             so the library's default initializer must be removed per WorkManager docs. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            tools:node="remove" />
+
+    </application>
+</manifest>

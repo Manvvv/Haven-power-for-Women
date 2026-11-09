@@ -1,22 +1,43 @@
 {
+  "id": "https://haven-your-own-voice.vercel.app/",
   "name": "Haven — A Silent Shield, A Strong Voice",
   "short_name": "Haven",
   "description": "AI-Powered Women Safety & Silent SOS Platform",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#be185d",
   "orientation": "portrait",
+  "lang": "en",
+  "categories": ["health", "lifestyle", "utilities"],
   "icons": [
     {
       "src": "/icon-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
     },
     {
       "src": "/icon-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
-  ]
+  ],
+  "screenshots": [],
+  "related_applications": [
+    {
+      "platform": "play",
+      "url": "https://play.google.com/store/apps/details?id=com.haven.android",
+      "id": "com.haven.android"
+    }
+  ],
+  "prefer_related_applications": false
 }

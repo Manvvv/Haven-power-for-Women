@@ -1,0 +1,26 @@
+<resources>
+    <string name="app_name">HAVEN</string>
+    <string name="monitoring_notification_title">HAVEN SOS Monitoring Active</string>
+    <string name="monitoring_notification_text">Shake 3× to trigger emergency SOS. Tap to open HAVEN.</string>
+    <string name="sos_triggered_title">🚨 SOS Emergency Triggered</string>
+    <string name="sos_triggered_text">Emergency request is being transmitted to HAVEN.</string>
+    <string name="sos_transmitted_title">🚨 SOS Transmitted</string>
+    <string name="sos_transmitted_text">Emergency received by HAVEN. Authorities and trusted contacts notified.</string>
+    <string name="sos_pending_title">⚠️ SOS Pending Transmission</string>
+    <string name="sos_pending_text">No connectivity. Emergency queued and will retry automatically.</string>
+    <string name="channel_monitoring_name">SOS Monitoring</string>
+    <string name="channel_monitoring_desc">Persistent notification shown while HAVEN shake monitoring is active</string>
+    <string name="channel_sos_name">SOS Alert</string>
+    <string name="channel_sos_desc">Notifications for SOS trigger and transmission status</string>
+    <string name="perm_location_rationale">HAVEN needs location permission to include your GPS coordinates in the emergency SOS request, helping authorities reach you faster.</string>
+    <string name="perm_notification_rationale">HAVEN needs notification permission to display the persistent SOS monitoring indicator and to alert you when an SOS is triggered.</string>
+    <string name="label_email">Email</string>
+    <string name="label_password">Password</string>
+    <string name="label_sign_in">Sign In</string>
+    <string name="label_signing_in">Signing in…</string>
+    <string name="label_enable_monitoring">Enable Shake Monitoring</string>
+    <string name="label_disable_monitoring">Disable Monitoring</string>
+    <string name="label_test_shake">Test Shake Detection</string>
+    <string name="label_contacts">Trusted Contacts</string>
+    <string name="label_logout">Log Out</string>
+</resources>

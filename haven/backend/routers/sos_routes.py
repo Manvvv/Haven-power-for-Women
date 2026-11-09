@@ -256,19 +256,26 @@ async def save_extracted_data(
         "status": "CREATED",
         "case_id": case_id,
         "user_id": user.user_id if user else "anonymous",
-        "trigger_type": "steganography",
+        "trigger_type": body.get("trigger_type") or "steganography",
         "embedding": embedding,
     }
     if idempotency_key:
         doc["idempotency_key"] = idempotency_key
 
-    # Canonical numeric fix: the PanicButton (and some steganography submissions)
-    # send `location` as a "lat,lng" string. Parse it ONCE here, server-side, into
-    # the numeric latitude/longitude the Rapid Response Network resolver and the
-    # authority map expect — so a case whose card shows coordinates can actually be
-    # dispatched. The human-readable `location` string is preserved as-is above;
-    # a non-coordinate place name yields {} and the row simply has no numeric fix.
-    doc.update(canonical_coord_fields(location_text=doc.get("location", "")))
+    # Coordinate fields: support both direct structured coordinates and parsed location text
+    lat = body.get("latitude")
+    lng = body.get("longitude")
+    if lat is not None and lng is not None:
+        try:
+            doc["latitude"] = float(lat)
+            doc["longitude"] = float(lng)
+            doc["location_freshness"] = str(body.get("location_freshness", "FRESH"))
+            if body.get("location_accuracy") is not None:
+                doc["location_accuracy"] = float(body.get("location_accuracy"))
+        except (ValueError, TypeError):
+            doc.update(canonical_coord_fields(location_text=doc.get("location", "")))
+    else:
+        doc.update(canonical_coord_fields(location_text=doc.get("location", "")))
 
     # Persist. If the write fails, surface 503 — never report a save that did not happen.
     try:

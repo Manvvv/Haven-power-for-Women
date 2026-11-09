@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.haven.android.debug",
+      "sha256_cert_fingerprints": [
+        "E7:D7:90:63:B2:55:B8:BF:98:54:FA:E2:C6:01:51:7D:82:EE:A2:CD:F4:7C:65:B1:C8:9C:8B:D7:43:0D:8F:C0"
+      ]
+    }
+  }
+]

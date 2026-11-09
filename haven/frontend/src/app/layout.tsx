@@ -3,6 +3,7 @@ import { ClerkProvider } from '@clerk/nextjs'
 import { LanguageProvider } from '@/components/LanguageContext'
 import QuickEscape from '@/components/QuickEscape'
 import OfflineBanner from '@/components/OfflineBanner'
+import ServiceWorkerRegistrar from '@/components/ServiceWorkerRegistrar'
 import './globals.css'
 
 export const viewport: Viewport = {
@@ -15,6 +16,15 @@ export const metadata: Metadata = {
   title: 'Haven — A Silent Shield, A Strong Voice',
   description: 'AI-powered platform empowering women in abusive situations.',
   manifest: '/manifest.json',
+  icons: {
+    icon: [
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { url: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+    ],
+    apple: [
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+    ],
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
@@ -27,6 +37,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <ClerkProvider>
       <html lang="en">
         <body>
+          <ServiceWorkerRegistrar />
           <LanguageProvider>
             <OfflineBanner />
             <QuickEscape>

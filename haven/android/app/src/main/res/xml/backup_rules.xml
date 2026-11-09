@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Exclude encrypted preference files and token store from cloud backup.
+         Encrypted with hardware Android Keystore keys that cannot survive device transfer. -->
+    <exclude domain="sharedpref" path="haven_secure_prefs.xml" />
+    <exclude domain="sharedpref" path="haven_pending_queue.xml" />
+    <exclude domain="file" path="haven_pending_incidents.db" />
+</full-backup-content>

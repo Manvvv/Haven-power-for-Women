@@ -8,11 +8,21 @@ const nextConfig = {
     domains: ['res.cloudinary.com'],
   },
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'https://haven-power-for-women.onrender.com',
   },
   // Fix for tunnel/external URL navigation
   assetPrefix: process.env.ASSET_PREFIX || '',
   trailingSlash: false,
+  async rewrites() {
+    return [
+      // Serve Digital Asset Links at the standard /.well-known/assetlinks.json path.
+      // Required for Trusted Web Activity (TWA) verification by Android.
+      {
+        source: '/.well-known/assetlinks.json',
+        destination: '/api/well-known/assetlinks',
+      },
+    ]
+  },
   async headers() {
     return [
       {
@@ -49,4 +59,3 @@ const nextConfig = {
 }
 
 module.exports = nextConfig
-

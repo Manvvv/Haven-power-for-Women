@@ -630,9 +630,11 @@ from routers.analytics_routes import router as analytics_router
 from routers.privacy_routes import router as privacy_router
 from routers.search_routes import router as search_router
 from routers.dispatch_routes import router as dispatch_router
+from routers.shake_sos_routes import router as shake_sos_router
 
 app.include_router(auth_router)
 app.include_router(sos_router)
+app.include_router(shake_sos_router)
 app.include_router(voice_router)
 app.include_router(ai_router)
 app.include_router(legal_router)
@@ -729,6 +731,21 @@ async def _stop_dispatch_sweeper():
     task = getattr(app.state, "_dispatch_sweeper_task", None)
     if task is not None:
         task.cancel()
+
+
+@app.get("/download-apk", tags=["Android"])
+def download_apk():
+    """Serve the compiled debug APK directly to mobile devices on the network."""
+    from fastapi.responses import FileResponse
+    from fastapi import HTTPException
+    apk_path = Path(__file__).resolve().parent.parent / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
+    if not apk_path.is_file():
+        raise HTTPException(status_code=404, detail="Debug APK has not been compiled yet")
+    return FileResponse(
+        path=str(apk_path),
+        filename="haven-shake-sos-debug.apk",
+        media_type="application/vnd.android.package-archive"
+    )
 
 
 if __name__ == "__main__":

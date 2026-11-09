@@ -1,17 +1,20 @@
 """Authentication routes for Haven."""
 import logging
-from datetime import timedelta
+import uuid
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from services import responder_service
 from auth import (
     AuthUser, TokenResponse, AuthorityLoginModel,
     create_access_token, JWT_EXPIRATION_HOURS,
+    hash_password, verify_password,
 )
 from services.authority_service import authenticate_authority, ensure_dev_authority
 from services.responder_service import authenticate_responder, ensure_dev_responder
-from models.schemas import ResponderLoginModel
+from models.schemas import ResponderLoginModel, UserRegisterModel, UserLoginModel
 from services.audit_service import log_audit
 from rate_limiter import rate_limit_dependency
+from services.db import get_collection
 
 logger = logging.getLogger("haven_backend")
 router = APIRouter(tags=["Authentication"])
@@ -156,5 +159,160 @@ def responder_login(
     return TokenResponse(
         access_token=token, token_type="bearer",
         role=role, user_id=responder_id,
+        expires_in=JWT_EXPIRATION_HOURS * 3600,
+    )
+
+
+# ─── End-user self-registration ──────────────────────────────────────────────
+
+@router.post("/auth/user-register", response_model=TokenResponse, status_code=201)
+def user_register(
+    payload: UserRegisterModel,
+    _=Depends(rate_limit_dependency(max_requests=5, window_seconds=60)),
+):
+    """Register a new end-user account.
+
+    Identity (user_id, role) is derived ENTIRELY from the server — never from
+    the client body. role is fixed to 'user'. Password is hashed PBKDF2 before
+    storage; plaintext is never persisted. Duplicate e-mail addresses are
+    rejected with 409.
+    """
+    users_coll = get_collection("users")
+    if users_coll is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Storage temporarily unavailable. Please try again.",
+        )
+
+    # Reject duplicate e-mail
+    if users_coll.find_one({"email": payload.email}):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with that e-mail already exists.",
+        )
+
+    # Generate a stable, server-side user identity — never from the client
+    new_user_id = str(uuid.uuid4())
+    role = "user"  # immutable; never elevated from client input
+
+    hashed = hash_password(payload.password)
+
+    user_doc = {
+        "user_id": new_user_id,
+        "email": payload.email,
+        "name": payload.name,
+        "role": role,
+        "password_hash": hashed["hash"],
+        "password_salt": hashed["salt"],
+        "active": True,
+        "created_at": datetime.utcnow(),
+    }
+
+    try:
+        users_coll.insert_one(user_doc)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not create user account. Please try again.",
+        )
+
+    token = create_access_token(
+        user_id=new_user_id,
+        role=role,
+        email=payload.email,
+        name=payload.name,
+        expires_delta=timedelta(hours=JWT_EXPIRATION_HOURS),
+    )
+
+    try:
+        log_audit(
+            new_user_id, role, "USER_REGISTER",
+            metadata={"email": payload.email, "name": payload.name},
+        )
+    except Exception:
+        pass
+
+    return TokenResponse(
+        access_token=token, token_type="bearer",
+        role=role, user_id=new_user_id,
+        expires_in=JWT_EXPIRATION_HOURS * 3600,
+    )
+
+
+# ─── End-user credential login ───────────────────────────────────────────────
+
+@router.post("/auth/user-login", response_model=TokenResponse)
+def user_login(
+    payload: UserLoginModel,
+    _=Depends(rate_limit_dependency(max_requests=5, window_seconds=60)),
+):
+    """Authenticate an end-user against a server-side record.
+
+    The authenticated identity (user_id, email, name, role) embedded in the
+    issued token is read ENTIRELY from the verified server-side record. Client-
+    supplied fields are used only for credential lookup; they CANNOT alter the
+    identity or role written into the token.
+
+    A uniform 401 is returned for both 'not found' and 'wrong password' — the
+    caller cannot learn whether an e-mail address is registered.
+    """
+    users_coll = get_collection("users")
+    if users_coll is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Storage temporarily unavailable. Please try again.",
+        )
+
+    record = users_coll.find_one({"email": payload.email})
+
+    # Uniform 401 — never reveal whether the e-mail exists
+    _INVALID_CREDS = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    if not record:
+        raise _INVALID_CREDS
+
+    if not record.get("active", True):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is inactive. Contact an administrator.",
+        )
+
+    pw_ok = verify_password(
+        payload.password,
+        record.get("password_hash", ""),
+        record.get("password_salt", ""),
+    )
+    if not pw_ok:
+        raise _INVALID_CREDS
+
+    # Identity is read ENTIRELY from the verified server-side record
+    user_id = record["user_id"]
+    role = "user"  # fixed server-side; never from client or DB elevation
+    email = record.get("email", payload.email)
+    name = record.get("name")
+
+    token = create_access_token(
+        user_id=user_id,
+        role=role,
+        email=email,
+        name=name,
+        expires_delta=timedelta(hours=JWT_EXPIRATION_HOURS),
+    )
+
+    try:
+        log_audit(
+            user_id, role, "USER_LOGIN",
+            metadata={"email": email},
+        )
+    except Exception:
+        pass
+
+    return TokenResponse(
+        access_token=token, token_type="bearer",
+        role=role, user_id=user_id,
         expires_in=JWT_EXPIRATION_HOURS * 3600,
     )

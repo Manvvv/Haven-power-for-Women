@@ -1,0 +1,12 @@
+# HAVEN Android - local configuration
+# Copy this file to local.properties and fill in your values.
+# DO NOT commit local.properties to version control.
+
+# Android SDK location (required for Gradle build)
+sdk.dir=C\:\\Users\\YourUsername\\AppData\\Local\\Android\\Sdk
+
+# HAVEN backend URLs
+# Development (Android Emulator - 10.0.2.2 maps to host localhost)
+havenBaseUrl=http://10.0.2.2:8000
+# Production / staging HTTPS endpoint
+havenBaseUrlHttps=https://haven-backend.onrender.com

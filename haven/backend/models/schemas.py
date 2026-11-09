@@ -1,6 +1,50 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Any, Dict
 from datetime import datetime
+
+# ─────────────────────── User Auth (end-user registration / login) ───────────
+
+class UserRegisterModel(BaseModel):
+    """End-user self-registration.
+
+    Identity (user_id, role) is ALWAYS generated server-side — never from this
+    body. The `role` field is NOT accepted here; all registered users receive
+    role='user'. Password is validated for minimum length and hashed
+    PBKDF2-HMAC-SHA256 before storage; plaintext is never persisted.
+    """
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=8, max_length=256)
+    name: str = Field(..., min_length=1, max_length=120)
+
+    @field_validator("email")
+    @classmethod
+    def email_must_contain_at(cls, v: str) -> str:
+        if "@" not in v or "." not in v.split("@")[-1]:
+            raise ValueError("Invalid e-mail address")
+        return v.strip().lower()
+
+    @field_validator("password")
+    @classmethod
+    def password_min_length(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
+
+
+class UserLoginModel(BaseModel):
+    """End-user credential login.
+
+    The returned token identity is read ENTIRELY from the server-side user
+    record — the client cannot supply or elevate role through this body.
+    """
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=1, max_length=256)
+
+    @field_validator("email")
+    @classmethod
+    def normalise_email(cls, v: str) -> str:
+        return v.strip().lower()
+
 
 class CaseUpdateModel(BaseModel):
     status: Optional[str] = Field(None, max_length=50)
