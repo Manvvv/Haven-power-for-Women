@@ -1,4 +1,4 @@
-"""Live MongoDB concurrency check for the first-acceptance-wins barrier.
+﻿"""Live MongoDB concurrency check for the first-acceptance-wins barrier.
 
 Writes ONLY to clearly-marked test documents (badge prefix LIVE-TEST-, dispatch
 case prefix LIVE-TEST-CASE-) and removes them afterwards. Never run in production.
@@ -16,7 +16,7 @@ Usage (from backend/):  python verify_live_concurrency.py
 import os
 import sys
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
@@ -82,7 +82,7 @@ def main() -> int:
             rs._persist(rec, {
                 "duty_status": "ON_DUTY", "status": "AVAILABLE",
                 "current_location": {"type": "Point", "coordinates": [INC_LNG, INC_LAT + 0.001 * (i + 1)]},
-                "location_updated_at": datetime.utcnow(),
+                "location_updated_at": datetime.now(timezone.utc),
             })
             ids.append(rs.get_responder(badge)["responder_id"])
 

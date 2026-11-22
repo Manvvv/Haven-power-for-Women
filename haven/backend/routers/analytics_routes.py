@@ -1,4 +1,4 @@
-"""Analytics routes — dashboard metrics for authorities.
+﻿"""Analytics routes — dashboard metrics for authorities.
 
 All metrics are computed live from stored documents (Phase 16). Acknowledgement
 and resolution times are derived from the real sos_status_history transition
@@ -6,7 +6,7 @@ timestamps — nothing is hardcoded. When there is not yet enough data to comput
 a duration, the field is returned as null (not a fabricated number).
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends
 from auth import AuthUser, require_authority
 from services.db import sos_cases, sos_events, sos_status_history, serialize_doc
@@ -133,7 +133,7 @@ def cases_timeline(current_user: AuthUser = Depends(require_authority)):
     collection = sos_cases()
     if collection is None:
         return {"timeline": []}
-    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
     pipeline = [
         {"$match": {"created_at": {"$gte": thirty_days_ago}}},
         {"$group": {

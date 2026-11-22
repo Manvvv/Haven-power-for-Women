@@ -23,7 +23,7 @@ import hashlib
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from services.db import legal_docs, serialize_doc
 from services.embeddings import embed, embedding_info, EMBEDDING_DIM
@@ -161,7 +161,7 @@ def ingest_document(
                 "embedding_status": embedding_info()["status"], "error": "title and text are required"}
 
     if not document_id:
-        document_id = f"LEGAL-{int(datetime.utcnow().timestamp())}"
+        document_id = f"LEGAL-{int(datetime.now(timezone.utc).timestamp())}"
 
     chunks = chunk_document(text)
     if not chunks:
@@ -169,7 +169,7 @@ def ingest_document(
                 "embedding_status": embedding_info()["status"], "error": "no extractable text"}
 
     einfo = embedding_info()
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     ingested = skipped = 0
 
     for idx, chunk in enumerate(chunks):

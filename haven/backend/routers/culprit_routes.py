@@ -1,4 +1,4 @@
-"""Case & Profile Intelligence routes (formerly Culprit DB) + semantic case search.
+﻿"""Case & Profile Intelligence routes (formerly Culprit DB) + semantic case search.
 
 Search now goes through `services.profile_search`:
   * NAME queries → deterministic lexical search (no embeddings, no similarity
@@ -14,7 +14,7 @@ are audited (without raw queries or full descriptions), and embedding vectors
 are never returned.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException
 from auth import AuthUser, get_current_user, require_authority
 from rate_limiter import rate_limit_dependency
@@ -108,7 +108,7 @@ def report_culprit(
     # name lookups stay deterministic).
     from services.embeddings import embed
     embedding = embed(f"{cleaned['physical_description']}. {cleaned['behavioral_traits']}")
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     profile_id = generate_profile_id()
     doc = {
         "name": cleaned["name"],
@@ -250,11 +250,11 @@ def associate_profile_case(
         "case_id": case_id,
         "relationship": relationship,
         "associated_by": current_user.user_id,
-        "associated_at": datetime.utcnow(),
+        "associated_at": datetime.now(timezone.utc),
     }
     collection.update_one(
         {"culprit_id": profile_id},
-        {"$push": {"associated_cases": association}, "$set": {"updated_at": datetime.utcnow()}})
+        {"$push": {"associated_cases": association}, "$set": {"updated_at": datetime.now(timezone.utc)}})
     log_audit(current_user.user_id, current_user.role, "PROFILE_CASE_ASSOCIATED",
               case_id=case_id, metadata={"profile_id": profile_id, "relationship": relationship})
     return {"success": True, "profile_id": profile_id, "case_id": case_id,

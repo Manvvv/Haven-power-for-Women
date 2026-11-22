@@ -1,7 +1,7 @@
 import json
 from typing import Dict, List
 from fastapi import WebSocket
-from datetime import datetime
+from datetime import datetime, timezone
 from services.db import notifications
 import secrets
 import time
@@ -38,7 +38,7 @@ class NotificationManager:
             "title": case_data.get("title", "New notification"),
             "message": case_data.get("message", ""),
             "case_id": case_data.get("case_id"),
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "read": False,
             "data": case_data,
         }
@@ -74,7 +74,7 @@ class NotificationManager:
             "message": message,
             "case_id": case_id,
             "read": False,
-            "created_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc)
         }
         coll.insert_one(doc)
         return doc["notification_id"]

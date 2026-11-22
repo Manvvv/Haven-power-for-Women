@@ -1,7 +1,7 @@
-"""Cases routes — view and manage SOS cases."""
+﻿"""Cases routes — view and manage SOS cases."""
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from auth import AuthUser, require_authority, decrypt_evidence_payload
@@ -138,7 +138,7 @@ def update_case(
 
     # Remaining non-status fields (notes, assigned unit, priority, severity) update directly.
     if all_fields:
-        all_fields["updated_at"] = datetime.utcnow()
+        all_fields["updated_at"] = datetime.now(timezone.utc)
         all_fields["last_updated_by"] = current_user.user_id
         result = collection.update_one({"case_id": case_id}, {"$set": all_fields})
         if result.matched_count == 0:

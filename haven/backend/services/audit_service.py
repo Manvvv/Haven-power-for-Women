@@ -24,7 +24,7 @@ import json
 import hashlib
 import secrets
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger("haven_backend")
 
@@ -141,7 +141,7 @@ def log_audit(actor_id, role, action, case_id=None, result='success',
         'ip_address': ip or '',
         'user_agent': user_agent or '',
         'metadata': metadata or {},
-        'timestamp': datetime.utcnow(),
+        'timestamp': datetime.now(timezone.utc),
     }
 
     # Tamper-evidence hash chain (application level — see module docstring).

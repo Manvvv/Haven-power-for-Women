@@ -1,4 +1,4 @@
-"""Rapid Response Network HTTP API — human-approved dispatch + responder actions.
+﻿"""Rapid Response Network HTTP API — human-approved dispatch + responder actions.
 
 Endpoint groups and their trust boundary:
 
@@ -21,7 +21,7 @@ All live WebSocket fan-out of state changes goes through dispatch_notify intents
 returned by the engine; this router only transports them.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Body, status
@@ -217,7 +217,7 @@ def _nearby_responder_view(rec: Dict[str, Any], inc_lng: float, inc_lat: float) 
     ts = rec.get("location_updated_at")
     age_seconds = None
     if isinstance(ts, datetime):
-        age_seconds = max(0, int((datetime.utcnow() - ts).total_seconds()))
+        age_seconds = max(0, int((datetime.now(timezone.utc) - (ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts)).total_seconds()))
     location_fresh = (
         age_seconds is not None
         and age_seconds <= dispatch_service.RESPONDER_LOCATION_MAX_AGE_SECONDS
@@ -267,7 +267,7 @@ def _network_responder_view(rec: Dict[str, Any]) -> Dict[str, Any]:
     ts = rec.get("location_updated_at")
     age_seconds = None
     if isinstance(ts, datetime):
-        age_seconds = max(0, int((datetime.utcnow() - ts).total_seconds()))
+        age_seconds = max(0, int((datetime.now(timezone.utc) - (ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts)).total_seconds()))
     location_fresh = (
         age_seconds is not None
         and age_seconds <= dispatch_service.RESPONDER_LOCATION_MAX_AGE_SECONDS
@@ -400,7 +400,7 @@ def rrn_metrics_endpoint(current_user: AuthUser = Depends(require_authority)):
     metrics = {
         **dispatch_service.status_counts(),
         **responder_service.availability_counts(),
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
     }
     return {"metrics": metrics}
 
@@ -472,7 +472,7 @@ def rrn_network_endpoint(current_user: AuthUser = Depends(require_authority)):
     return {
         "summary": responder_service.availability_counts(),
         "responders": roster,
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
     }
 
 
@@ -501,7 +501,7 @@ def rrn_providers_endpoint(current_user: AuthUser = Depends(require_authority)):
         })
         rows.append(view)
     rows.sort(key=lambda r: (str(r.get("display_label") or "")))
-    return {"providers": rows, "generated_at": datetime.utcnow().isoformat() + "Z"}
+    return {"providers": rows, "generated_at": datetime.now(timezone.utc).isoformat() + "Z"}
 
 
 @router.get("/dispatch/rrn/active-responders")
@@ -521,7 +521,7 @@ def rrn_active_responders_endpoint(current_user: AuthUser = Depends(require_auth
     id route.
     """
     rows = dispatch_service.active_assigned_responders()
-    return {"active_responders": rows, "generated_at": datetime.utcnow().isoformat() + "Z"}
+    return {"active_responders": rows, "generated_at": datetime.now(timezone.utc).isoformat() + "Z"}
 
 
 @router.get("/dispatch/{dispatch_id}")
@@ -704,7 +704,7 @@ def _parse_device_time(raw):
     if not isinstance(raw, str) or not raw.strip() or len(raw) > 64:
         return None
     try:
-        from datetime import datetime as _dt
+        from datetime import datetime, timezone as _dt
         return _dt.fromisoformat(raw.strip().replace("Z", "+00:00"))
     except ValueError:
         return None

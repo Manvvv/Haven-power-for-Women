@@ -1,7 +1,7 @@
-"""Authentication routes for Haven."""
+﻿"""Authentication routes for Haven."""
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from services import responder_service
 from auth import (
@@ -205,7 +205,7 @@ def user_register(
         "password_hash": hashed["hash"],
         "password_salt": hashed["salt"],
         "active": True,
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
     }
 
     try:

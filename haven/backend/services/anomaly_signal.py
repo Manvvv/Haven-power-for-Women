@@ -97,7 +97,7 @@ def _to_epoch(ts) -> "float | None":
     """Parse an ISO-8601 string or numeric epoch into epoch seconds (UTC).
 
     Naive timestamps are treated as UTC (the backend emits tz-less UTC via
-    datetime.utcnow().isoformat()). Returns None for missing/unparseable input —
+    datetime.now(timezone.utc).isoformat()). Returns None for missing/unparseable input —
     the caller then simply omits the speed computation (never fabricates one).
     """
     if ts is None:

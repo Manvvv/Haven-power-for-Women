@@ -3,7 +3,7 @@ import json
 import logging
 import secrets
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from auth import AuthUser, require_authority
 from services.db import sos_cases, dir_reports, serialize_doc
@@ -42,14 +42,14 @@ def trigger_dispatch_webhook(
     current_user: AuthUser = Depends(require_authority)
 ):
     """Trigger emergency dispatch to ERSS 112 or NGO partner."""
-    ts = datetime.utcnow().isoformat()
+    ts = datetime.now(timezone.utc).isoformat()
     dispatch_id = f"DISPATCH-{int(time.time())}-{secrets.token_hex(3).upper()}"
     collection = sos_cases()
     if collection is not None:
         collection.update_one(
             {"case_id": payload.case_id},
             {"$set": {"dispatch_status": "DISPATCHED", "dispatch_id": dispatch_id,
-                      "dispatched_to": payload.agency_type, "dispatched_at": datetime.utcnow(),
+                      "dispatched_to": payload.agency_type, "dispatched_at": datetime.now(timezone.utc),
                       "dispatched_by": current_user.user_id},
              "$push": {"dispatch_history": {
                  "dispatch_id": dispatch_id, "agency": payload.agency_type,
@@ -93,7 +93,7 @@ def generate_dir_form(
     dir_form_number = f"DIR-{payload.case_id}-{int(time.time())}"
     response_doc = {
         "case_id": payload.case_id, "dir_form_number": dir_form_number,
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "officer_name": payload.officer_name or current_user.name or "Protection Officer",
         "officer_designation": payload.officer_designation or "Protection Officer",
         "station_name": payload.station_name, "district": payload.district,
@@ -145,7 +145,7 @@ def discreet_dispatch(
         "dispatch_type": payload.dispatch_type, "priority": payload.priority,
         "silent_approach": payload.silent_approach, "dispatcher_notes": payload.dispatcher_notes,
         "dispatcher_id": current_user.user_id, "response_protocol": protocol,
-        "dispatched_at": datetime.utcnow(), "status": "DISPATCHED"
+        "dispatched_at": datetime.now(timezone.utc), "status": "DISPATCHED"
     }
     collection.update_one({"case_id": payload.case_id}, {"$push": {"dispatch_history": dispatch_doc}})
     log_audit(current_user.user_id, current_user.role, "DISPATCH_SENT",

@@ -1,4 +1,4 @@
-"""AI Engine routes — text gen, decomposition, image gen, poem, risk classifier, case summary."""
+﻿"""AI Engine routes — text gen, decomposition, image gen, poem, risk classifier, case summary."""
 import base64
 import io
 import json
@@ -6,7 +6,7 @@ import logging
 import re
 import time
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -180,7 +180,7 @@ def classify_risk_endpoint(
 
         coll = ai_analyses()
         if coll is not None:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             ai_snapshot = {
                 "severity": result.get("severity"),
                 "risk_score": result.get("risk_score"),
@@ -317,7 +317,7 @@ def override_ai_analysis(
             "reason": body.get("reason", "AI classification accepted by reviewer"),
             "notes": body.get("notes", ""),
             "reviewer_id": current_user.user_id,
-            "reviewed_at": datetime.utcnow(),
+            "reviewed_at": datetime.now(timezone.utc),
         }
         audit_action = "AI_RESULT_REVIEWED"
     else:
@@ -330,7 +330,7 @@ def override_ai_analysis(
             "reason": body.get("reason", ""),
             "notes": body.get("notes", ""),
             "reviewer_id": current_user.user_id,
-            "reviewed_at": datetime.utcnow(),
+            "reviewed_at": datetime.now(timezone.utc),
         }
         audit_action = "SEVERITY_OVERRIDDEN"
 

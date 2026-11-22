@@ -1,8 +1,8 @@
-"""Admin routes for system metrics, user roles, system config, and security audit logs."""
+﻿"""Admin routes for system metrics, user roles, system config, and security audit logs."""
 import os
 import logging
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Query, Body, HTTPException, Path
 from services.db import audit_logs, sos_cases, get_db, sos_events, serialize_doc, voice_sos_config
 from auth import AuthUser, require_admin
@@ -105,7 +105,7 @@ def list_admin_users(
                     "user_id": uid,
                     "role": "user",
                     "configured_safe_word": bool(c.get("safe_word_hash")),
-                    "created_at": c.get("created_at", datetime.utcnow().isoformat()),
+                    "created_at": c.get("created_at", datetime.now(timezone.utc).isoformat()),
                     "last_active": c.get("updated_at", c.get("created_at"))
                 }
 
@@ -242,7 +242,7 @@ def get_system_config(current_user: AuthUser = Depends(require_admin)):
             "name": "Haven"
         },
         "version": "2.0.0",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 

@@ -1,4 +1,4 @@
-"""Rapid Response Network dispatch orchestration (deterministic, human-approved).
+﻿"""Rapid Response Network dispatch orchestration (deterministic, human-approved).
 
 This is the engine behind the /dispatch/* and /responder/* endpoints. Its design
 is governed by five hard rules:
@@ -31,7 +31,7 @@ import copy
 import logging
 import secrets
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 
 from services.db import dispatch_requests, dispatch_attempts, response_events
@@ -42,6 +42,16 @@ from services.geo_validation import haversine_meters, finite_in_range, LAT_MIN, 
 import rate_limiter
 
 logger = logging.getLogger("haven_backend")
+def _cmp_pair(a, b):
+    """Normalize a naive/aware datetime pair for comparison (treats naive as UTC).
+    Mirrors how real MongoDB handles UTC datetimes from Python drivers."""
+    if isinstance(a, datetime) and isinstance(b, datetime):
+        if a.tzinfo is None and b.tzinfo is not None:
+            a = a.replace(tzinfo=timezone.utc)
+        elif a.tzinfo is not None and b.tzinfo is None:
+            b = b.replace(tzinfo=timezone.utc)
+    return a, b
+
 
 
 def _env_int(name: str, default: int, lo: int, hi: int) -> int:
@@ -156,13 +166,22 @@ class _MemoryCollection:
                         if v == operand:
                             return False
                     elif op == "$lt":
-                        if v is None or not (v < operand):
+                        if v is None:
+                            return False
+                        _v, _o = _cmp_pair(v, operand)
+                        if not (_v < _o):
                             return False
                     elif op == "$lte":
-                        if v is None or not (v <= operand):
+                        if v is None:
+                            return False
+                        _v, _o = _cmp_pair(v, operand)
+                        if not (_v <= _o):
                             return False
                     elif op == "$gte":
-                        if v is None or not (v >= operand):
+                        if v is None:
+                            return False
+                        _v, _o = _cmp_pair(v, operand)
+                        if not (_v >= _o):
                             return False
                     elif op == "$exists":
                         if bool(operand) != (k in doc):
@@ -253,7 +272,7 @@ def _events():
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
 def _iso(dt) -> Optional[str]:
@@ -612,7 +631,9 @@ def get_offers_for_responder(responder_id: str) -> List[Dict[str, Any]]:
     out = []
     for att in _attempts().find({"responder_id": responder_id, "response": PENDING}):
         exp = att.get("expires_at")
-        if isinstance(exp, datetime) and exp < now:
+        # exp from MongoDB may be naive UTC; make it aware before comparing to aware now.
+        if isinstance(exp, datetime) and (exp.replace(tzinfo=timezone.utc) if exp.tzinfo is None else exp) < now:
+
             continue
         d = get_dispatch(att.get("dispatch_id"))
         if not d or d.get("status") != OFFERED:

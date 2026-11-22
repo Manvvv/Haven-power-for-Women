@@ -1,4 +1,4 @@
-"""Web Push delivery for responder emergency offers (VAPID via pywebpush).
+﻿"""Web Push delivery for responder emergency offers (VAPID via pywebpush).
 
 HONESTY CONTRACT
   Creating a dispatch offer does NOT mean a phone received anything. This module
@@ -34,7 +34,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("haven_backend")
@@ -107,7 +107,9 @@ def build_payload(dispatch_id: str, priority: str, distance_m: Optional[float],
         dist_txt = "unknown"
     expires_txt = ""
     if isinstance(expires_at, datetime):
-        remaining = max(0, int((expires_at - datetime.utcnow()).total_seconds()))
+        # expires_at from MongoDB may be naive UTC; make it aware before comparing.
+        _ea = expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at
+        remaining = max(0, int((_ea - datetime.now(timezone.utc)).total_seconds()))
         expires_txt = f"{remaining // 60:02d}:{remaining % 60:02d}"
     return {
         "title": "HAVEN EMERGENCY REQUEST",

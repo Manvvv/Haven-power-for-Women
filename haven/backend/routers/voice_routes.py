@@ -3,7 +3,7 @@ import secrets
 import hmac
 import re
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict
 from fastapi import APIRouter, HTTPException, Depends, Body
 
@@ -139,7 +139,7 @@ def voice_sos_save_config(
         "user_id": target_user_id,
         "enabled": config.enabled,
         "cooldown_seconds": config.cooldown_seconds,
-        "updated_at": datetime.utcnow(),
+        "updated_at": datetime.now(timezone.utc),
     }
     if new_safe_word:
         # Hash with PBKDF2 + per-record salt (unchanged security model).
@@ -149,7 +149,7 @@ def voice_sos_save_config(
 
     _live('voice_sos_config').update_one(
         {"user_id": target_user_id},
-        {"$set": set_fields, "$setOnInsert": {"created_at": datetime.utcnow()}},
+        {"$set": set_fields, "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
         upsert=True,
     )
 
@@ -164,7 +164,7 @@ def voice_sos_save_config(
                 "phone": c.phone,
                 "email": c.email,
                 "priority": c.priority,
-                "created_at": datetime.utcnow(),
+                "created_at": datetime.now(timezone.utc),
             })
 
     return {"success": True, "message": "Voice SOS configuration securely saved"}
@@ -266,7 +266,7 @@ def voice_sos_trigger(
     set_cooldown(target_user_id, cooldown)
 
     event_id = f"VSOS-{int(time.time())}-{secrets.token_hex(4)}"
-    ts = trigger.timestamp or datetime.utcnow().isoformat()
+    ts = trigger.timestamp or datetime.now(timezone.utc).isoformat()
     alert_message = format_emergency_alert(event_id, ts, trigger.latitude, trigger.longitude)
 
     contacts = []
@@ -288,7 +288,7 @@ def voice_sos_trigger(
         "status": "triggered",
         "contact_delivery_status": contact_delivery,
         "is_test": False,
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
     }
     # Attach optional voice-AI metadata if the client analysed the transcript first.
     # Only text/metadata is stored — never raw audio.
@@ -322,7 +322,7 @@ def voice_sos_trigger(
             # IN_PROGRESS / RESOLVED are all valid. Previously wrote the
             # non-canonical "active", which broke transition/resolve (spurious 409).
             "status": "RECEIVED",
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
             "has_evidence": False,
         }
         # Canonical numeric fix on the CASE row (not only the human-readable
@@ -416,7 +416,7 @@ def voice_sos_analyze(
                     "intent_confidence": intent["confidence"],
                     "severity": (risk or {}).get("severity"),
                     "risk_score": (risk or {}).get("risk_score"),
-                    "analyzed_at": datetime.utcnow(),
+                    "analyzed_at": datetime.now(timezone.utc),
                 }}},
             )
         except Exception:
@@ -460,7 +460,7 @@ def voice_sos_test(
     if not match and trigger.hashed_safe_word:
         match = hmac.compare_digest(trigger.hashed_safe_word, stored_hash)
 
-    ts = trigger.timestamp or datetime.utcnow().isoformat()
+    ts = trigger.timestamp or datetime.now(timezone.utc).isoformat()
     event_id = f"TEST-{int(time.time())}-{secrets.token_hex(4)}"
 
     if _live('sos_events') is not None:
@@ -476,7 +476,7 @@ def voice_sos_test(
             "contact_delivery_status": {},
             "is_test": True,
             "safe_word_matched": match,
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
         })
 
     return {
@@ -538,7 +538,7 @@ def save_trusted_contacts(
             "phone": str(c.get("phone", ""))[:30],
             "email": str(c.get("email", ""))[:120],
             "priority": int(c.get("priority", 1)),
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
         }
         _live('trusted_contacts').insert_one(doc)
         saved.append({"name": doc["name"], "contact_id": doc["contact_id"]})
@@ -622,7 +622,7 @@ def add_trusted_contact(
         "phone": phone,
         "email": email,
         "priority": priority,
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
     }
     _live('trusted_contacts').insert_one(doc)
 

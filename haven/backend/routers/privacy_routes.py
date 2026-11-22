@@ -1,6 +1,6 @@
-"""Privacy routes for user data management and deletion requests."""
+﻿"""Privacy routes for user data management and deletion requests."""
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from auth import AuthUser, get_current_user, require_self_or_authority
@@ -153,14 +153,14 @@ def request_account_data_deletion(
     user_id = current_user.user_id
 
     coll = privacy_records()
-    req_id = f"DEL-REQ-{int(datetime.utcnow().timestamp())}"
+    req_id = f"DEL-REQ-{int(datetime.now(timezone.utc).timestamp())}"
     doc = {
         "request_id": req_id,
         "user_id": user_id,
         "request_type": body.get("request_type", "ACCOUNT_WIPE"),
         "reason": body.get("reason", "User requested account wipe"),
         "status": "QUEUED",
-        "created_at": datetime.utcnow()
+        "created_at": datetime.now(timezone.utc)
     }
     if coll is not None:
         coll.insert_one(doc)

@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
@@ -651,7 +651,8 @@ export default function VoiceSOSPage() {
           ws.send(JSON.stringify({
             latitude: currentLocation.lat,
             longitude: currentLocation.lng,
-            accuracy: 4.0,
+            // accuracy omitted: cached location has no fresh GPS accuracy reading.
+            // Interval-based getCurrentPosition calls below use pos.coords.accuracy.
             timestamp: new Date().toISOString()
           }))
         }

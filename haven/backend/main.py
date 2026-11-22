@@ -1,8 +1,8 @@
-"""Haven Women Safety Platform - Main Backend Application Entry Point."""
+﻿"""Haven Women Safety Platform - Main Backend Application Entry Point."""
 import os
 import logging
 from urllib.parse import urlsplit
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict
 from pathlib import Path
 from dotenv import load_dotenv
@@ -433,7 +433,7 @@ async def websocket_tracking_endpoint(
                 "event_id": event_id,
                 "latitude": lat,
                 "longitude": lng,
-                "timestamp": ts_in if isinstance(ts_in, str) and ts_in else datetime.utcnow().isoformat(),
+                "timestamp": ts_in if isinstance(ts_in, str) and ts_in else datetime.now(timezone.utc).isoformat(),
             }
             # Optional telemetry — included ONLY when the client actually supplies
             # a valid value (no fabricated accuracy=5.0 / speed=0 / heading=0).
@@ -581,7 +581,7 @@ async def websocket_dispatch_endpoint(
                 "dispatch_id": dispatch_id,
                 "latitude": lat,
                 "longitude": lng,
-                "timestamp": ts_in if isinstance(ts_in, str) and ts_in else datetime.utcnow().isoformat(),
+                "timestamp": ts_in if isinstance(ts_in, str) and ts_in else datetime.now(timezone.utc).isoformat(),
             }
             acc = _finite_or_none(data.get("accuracy"))
             if acc is not None and 0.0 <= acc <= 100000.0:
@@ -610,7 +610,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 # ─── Include Modular Routers ────────────────────────────────
@@ -630,11 +630,11 @@ from routers.analytics_routes import router as analytics_router
 from routers.privacy_routes import router as privacy_router
 from routers.search_routes import router as search_router
 from routers.dispatch_routes import router as dispatch_router
-from routers.shake_sos_routes import router as shake_sos_router
+# shake_sos_routes removed — website-only deployment
 
 app.include_router(auth_router)
 app.include_router(sos_router)
-app.include_router(shake_sos_router)
+# app.include_router(shake_sos_router)  # Removed: website-only scope
 app.include_router(voice_router)
 app.include_router(ai_router)
 app.include_router(legal_router)
@@ -651,102 +651,85 @@ app.include_router(search_router)
 app.include_router(dispatch_router)
 
 
-# ─── Rapid Response Network: background escalation sweeper ──────────────────
+# --- Rapid Response Network: background escalation sweeper -------------------
 # BACKEND-owned timing: offers time out after dispatch_service.DISPATCH_ACCEPT_
 # TIMEOUT_SECONDS (snapshotted per dispatch), never a frontend timer. This loop
 # calls the pure, idempotent process_expirations() on a fixed cadence and pushes
 # any resulting re-offer / FAILED notification intents. It is safe to run even if
-# another worker also sweeps: the PENDING→TIMEOUT claim is a single-doc guard.
+# another worker also sweeps: the PENDING->TIMEOUT claim is a single-doc guard.
 import asyncio as _asyncio
+from contextlib import asynccontextmanager as _asynccontextmanager
 
 _SWEEP_INTERVAL_SECONDS = 5
 
 
-@app.on_event("startup")
-async def _seed_dev_responders():
-    """Non-production only: seed development responder accounts so a developer
-    can exercise the full dispatch flow locally without a manual provisioning step.
+@_asynccontextmanager
+async def _lifespan(application):
+    """Single lifespan context replacing deprecated @app.on_event handlers.
 
-    This is intentionally a no-op in production (IS_PRODUCTION guard inside
-    ensure_dev_responder) and never bypasses the verification requirement — the
-    dev unit is seeded with verified=True and a fresh GPS fix exactly as described
-    in the security model. In production, operators must provision accounts via
-    provision_responder.py and approve them through the admin workflow.
+    Startup:
+      1. Seed dev responder accounts (non-production only).
+      2. Capture the running event loop for sync->async dispatch notifications.
+      3. Launch the RRN offer-expiry sweeper as a background task.
+
+    Shutdown:
+      4. Cancel the sweeper task cleanly.
     """
-    if IS_PRODUCTION:
-        return
-    try:
-        from services import responder_service as _rs
-        _rs.ensure_dev_responder()
-        # After seeding, give the dev unit a fresh GPS fix so find_eligible sees it.
-        import os as _os
-        _badge = _os.getenv("DEV_RESPONDER_BADGE", "HN-204")
-        _rec = _rs.get_responder(_badge)
-        if _rec and _rec.get("current_location") is None:
-            # Seed a valid GPS fix so the dev unit passes the freshness predicate.
-            # Coordinates: Bengaluru city centre (same area used in RRN test suite).
-            # Override with DEV_RESPONDER_LNG / DEV_RESPONDER_LAT env vars.
-            _lng = float(_os.getenv("DEV_RESPONDER_LNG", "77.5946"))
-            _lat = float(_os.getenv("DEV_RESPONDER_LAT", "12.9716"))
-            _rs.update_location(
-                _rec.get("responder_id") or f"RESP-{_badge}",
-                longitude=_lng,
-                latitude=_lat,
-            )
-        logger.info("Dev responder seeded (non-production only).")
-    except Exception as _e:
-        logger.warning("Could not seed dev responder: %s", _e)
+    # ── Startup ──────────────────────────────────────────────────────────────
+    # 1. Seed dev responders (non-production no-op guard is inside ensure_dev_responder)
+    if not IS_PRODUCTION:
+        try:
+            from services import responder_service as _rs
+            _rs.ensure_dev_responder()
+            import os as _os
+            _badge = _os.getenv("DEV_RESPONDER_BADGE", "HN-204")
+            _rec = _rs.get_responder(_badge)
+            if _rec and _rec.get("current_location") is None:
+                _lng = float(_os.getenv("DEV_RESPONDER_LNG", "77.5946"))
+                _lat = float(_os.getenv("DEV_RESPONDER_LAT", "12.9716"))
+                _rs.update_location(
+                    _rec.get("responder_id") or f"RESP-{_badge}",
+                    longitude=_lng,
+                    latitude=_lat,
+                )
+            logger.info("Dev responder seeded (non-production only).")
+        except Exception as _e:
+            logger.warning("Could not seed dev responder: %s", _e)
 
-
-@app.on_event("startup")
-async def _start_dispatch_sweeper():
-    # Capture the running loop so SYNC side-effect boundaries (e.g. the case-
-    # resolution hook running in a threadpool) can schedule live pushes.
+    # 2. Capture running loop for sync dispatch-notify side-effects
     try:
         from services import dispatch_notify
         dispatch_notify.set_event_loop(_asyncio.get_running_loop())
     except Exception:
         pass
 
+    # 3. Launch sweeper
     async def _sweep_loop():
         from services import dispatch_service
         from services.dispatch_notify import emit_intents as _emit
         while True:
             try:
                 await _asyncio.sleep(_SWEEP_INTERVAL_SECONDS)
-                # process_expirations is sync + pure; run it off the event loop.
                 result = await _asyncio.to_thread(dispatch_service.process_expirations)
                 await _emit(result.get("notify"))
             except _asyncio.CancelledError:
                 break
             except Exception:
-                # A sweep failure must never kill the loop; try again next tick.
-                pass
+                pass  # A sweep failure must never kill the loop
 
-    app.state._dispatch_sweeper_task = _asyncio.create_task(_sweep_loop())
+    _task = _asyncio.create_task(_sweep_loop())
+    application.state._dispatch_sweeper_task = _task
 
+    yield  # ── Application runs here ────────────────────────────────────────
 
-@app.on_event("shutdown")
-async def _stop_dispatch_sweeper():
-    task = getattr(app.state, "_dispatch_sweeper_task", None)
+    # ── Shutdown ─────────────────────────────────────────────────────────────
+    # 4. Cancel sweeper
+    task = getattr(application.state, "_dispatch_sweeper_task", None)
     if task is not None:
         task.cancel()
 
 
-@app.get("/download-apk", tags=["Android"])
-def download_apk():
-    """Serve the compiled debug APK directly to mobile devices on the network."""
-    from fastapi.responses import FileResponse
-    from fastapi import HTTPException
-    apk_path = Path(__file__).resolve().parent.parent / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
-    if not apk_path.is_file():
-        raise HTTPException(status_code=404, detail="Debug APK has not been compiled yet")
-    return FileResponse(
-        path=str(apk_path),
-        filename="haven-shake-sos-debug.apk",
-        media_type="application/vnd.android.package-archive"
-    )
-
+app.router.lifespan_context = _lifespan
 
 if __name__ == "__main__":
     import uvicorn

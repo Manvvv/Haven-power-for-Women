@@ -17,7 +17,7 @@ import json
 import uuid
 import hashlib
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -190,7 +190,7 @@ def therapy_chat(
             coll.update_one(
                 {"session_id": session_id},
                 {"$set": {"user_id": user_id, "session_id": session_id,
-                          "updated_at": datetime.utcnow()},
+                          "updated_at": datetime.now(timezone.utc)},
                  "$push": {"messages": {"$each": [
                      {"role": "user", "content": stored_user, "risk_level": triage.risk_level},
                      {"role": "assistant", "content": response_text},
@@ -315,7 +315,7 @@ def put_safety_plan(
     coll.update_one(
         {"user_id": current_user.user_id},
         {"$set": {"user_id": current_user.user_id, "ciphertext": enc["ciphertext"],
-                  "nonce": enc["nonce"], "updated_at": datetime.utcnow()}},
+                  "nonce": enc["nonce"], "updated_at": datetime.now(timezone.utc)}},
         upsert=True,
     )
     logger.info("mh_safety_plan_saved uid=%s", _uid_hash(current_user.user_id))
@@ -349,7 +349,7 @@ def post_mood_checkin(
         "mood": body.mood, "stress": body.stress, "sleep": body.sleep,
         "safety": body.safety, "support_connection": body.support_connection,
         "note_ciphertext": note_enc["ciphertext"], "note_nonce": note_enc["nonce"],
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
     })
     return {"success": True, "message": "Check-in saved. This is for your own reflection."}
 
@@ -391,7 +391,7 @@ def post_journal(
     coll.insert_one({
         "user_id": current_user.user_id, "entry_id": entry_id,
         "ciphertext": enc["ciphertext"], "nonce": enc["nonce"],
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
     })
     return {"success": True, "entry_id": entry_id}
 

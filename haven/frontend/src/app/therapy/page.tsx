@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, Send, Volume2, VolumeX, Sparkles, Wind, LifeBuoy, MessageCircle, Phone } from 'lucide-react'
@@ -26,8 +26,12 @@ function getTime() { return new Date().toLocaleTimeString([], { hour: '2-digit',
 
 export default function TherapyPage() {
   useHavenAuth()
-  const { user } = useUser()
-  const userId = user?.id || 'anon'
+  const { user, isLoaded } = useUser()
+  // Guard: only resolve the Clerk user id once the SDK has loaded.
+  // Before isLoaded is true, user is null; falling back to 'anon' here would attribute
+  // the first message to the anonymous bucket. We defer to undefined so sendMessage can
+  // gate on isLoaded before initiating the session.
+  const userId = isLoaded ? (user?.id || 'anon') : undefined
   const { lang, tn } = useLang()
 
   // Localized quick-reply prompts (spec §3 — no hardcoded strings on priority surfaces).
@@ -249,6 +253,9 @@ export default function TherapyPage() {
   }, [lang, cachedVoices, setMood])
 
   const sendMessage = async (msg?: string) => {
+    // Guard: Clerk must have resolved the session before we start a therapy session.
+    // If userId is still undefined, the SDK hasn't loaded — silently defer.
+    if (!isLoaded) return
     const text = msg || input
     if (!text.trim() || loading) return
     setMessages(prev => [...prev, { role: 'user', content: text, time: getTime() }])

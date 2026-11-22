@@ -1,4 +1,4 @@
-"""
+﻿"""
 HAVEN Audit Logging Module.
 Records sensitive authority actions for compliance and accountability.
 All audit records are immutable once written.
@@ -6,7 +6,7 @@ All audit records are immutable once written.
 
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
 
@@ -46,7 +46,7 @@ class AuditEntry(BaseModel):
     actor_role: str = "unknown"
     action: str
     case_id: Optional[str] = None
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
     success: bool = True
@@ -81,7 +81,7 @@ def log_audit(
         "actor_role": actor_role,
         "action": action,
         "case_id": case_id,
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(timezone.utc),
         "ip_address": ip_address or "",
         "user_agent": user_agent or "",
         "success": success,
@@ -147,13 +147,13 @@ def record_status_history(
         "from_status": old_status,
         "to_status": new_status,
         "changed_by": changed_by,
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(timezone.utc),
         "reason": reason or "",
     }
     try:
         sos_collection.update_one(
             {"case_id": case_id},
-            {"$push": {"status_history": history_entry}, "$set": {"updated_at": datetime.utcnow()}}
+            {"$push": {"status_history": history_entry}, "$set": {"updated_at": datetime.now(timezone.utc)}}
         )
     except Exception as e:
         logger.error(f"Failed to record status history for {case_id}: {e}")

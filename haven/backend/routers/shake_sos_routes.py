@@ -1,4 +1,4 @@
-"""
+﻿"""
 shake_sos_routes.py — Dedicated Shake-to-SOS API endpoints for the HAVEN Android app.
 
 This router extends the existing SOS infrastructure with a structured endpoint
@@ -26,7 +26,7 @@ trigger: the server prepares the link; a human opens it.
 """
 import secrets
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -179,7 +179,7 @@ async def shake_sos_trigger(
 
     # ── Generate case ID ──────────────────────────────────────────────────────
     case_id = f"SHAKE-{int(time.time())}-{secrets.token_hex(4).upper()}"
-    ts = datetime.utcnow().isoformat()
+    ts = datetime.now(timezone.utc).isoformat()
 
     location_str = (
         f"{payload.latitude}, {payload.longitude}" if has_location else "Location unavailable"
@@ -212,7 +212,7 @@ async def shake_sos_trigger(
             "Immediate Police Dispatch", "GPS Tracking", "Medical Alert"
         ],
         "status": "RECEIVED",
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
         "has_evidence": False,
         "device_model": payload.device_model,
         # Location accuracy metadata for authority dashboard
@@ -246,7 +246,7 @@ async def shake_sos_trigger(
             "location_freshness": payload.location_freshness,
             "status": "triggered",
             "is_test": is_test,
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
         }
         try:
             events_coll.insert_one(event_doc)

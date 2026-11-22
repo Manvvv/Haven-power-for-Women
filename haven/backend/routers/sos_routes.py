@@ -4,7 +4,7 @@ import hashlib
 import logging
 import secrets
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -232,7 +232,7 @@ async def save_extracted_data(
         if existing:
             return {"success": True, "case_id": existing.get("case_id"), "duplicate": True}
 
-    case_id = f"HAVEN-{int(datetime.utcnow().timestamp())}-{secrets.token_hex(3)}"
+    case_id = f"HAVEN-{int(datetime.now(timezone.utc).timestamp())}-{secrets.token_hex(3)}"
 
     # Generate embedding for semantic search
     embedding = []
@@ -252,7 +252,7 @@ async def save_extracted_data(
         "nature_of_abuse": body.get("nature_of_abuse", ""),
         "immediate_danger": body.get("immediate_danger", False),
         "needs": body.get("needs", []),
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
         "status": "CREATED",
         "case_id": case_id,
         "user_id": user.user_id if user else "anonymous",
@@ -348,7 +348,7 @@ def upload_sos_evidence(
 
     raw_content = f"{payload.case_id}:{payload.timestamp}:{payload.audio_base64[:100]}:{payload.image_base64[:100]}"
     evidence_hash = hashlib.sha256(raw_content.encode("utf-8")).hexdigest()
-    ts = payload.timestamp or datetime.utcnow().isoformat()
+    ts = payload.timestamp or datetime.now(timezone.utc).isoformat()
 
     encrypted_audio = encrypt_evidence_payload(payload.audio_base64)
     encrypted_image = encrypt_evidence_payload(payload.image_base64)
@@ -376,7 +376,7 @@ def upload_sos_evidence(
         {"case_id": payload.case_id},
         {"$set": {"has_evidence": True, "evidence_hash": evidence_hash,
                   "evidence": evidence_record, "evidence_captured_at": ts,
-                  "updated_at": datetime.utcnow()}}
+                  "updated_at": datetime.now(timezone.utc)}}
     )
 
     return {
@@ -438,7 +438,7 @@ async def sos_location_update(
             )
 
     from main import tracking_manager
-    ts = update.timestamp or datetime.utcnow().isoformat()
+    ts = update.timestamp or datetime.now(timezone.utc).isoformat()
     # Build the live payload from ONLY the fields actually supplied (no fabrication).
     data = {"event_id": update.event_id, "latitude": update.latitude,
             "longitude": update.longitude, "timestamp": ts}
@@ -456,7 +456,7 @@ async def sos_location_update(
         "latitude": update.latitude,
         "longitude": update.longitude,
         "location_timestamp": ts,
-        "updated_at": datetime.utcnow(),
+        "updated_at": datetime.now(timezone.utc),
     }
     if update.accuracy is not None:
         stored["location_accuracy"] = update.accuracy

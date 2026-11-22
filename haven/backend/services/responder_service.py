@@ -1,4 +1,4 @@
-"""Field-responder credential store & verification (Rapid Response Network).
+﻿"""Field-responder credential store & verification (Rapid Response Network).
 
 Responders are the people/units that physically respond to a HAVEN incident after
 an AUTHORITY has made a human-approved dispatch decision. They are a SEPARATE
@@ -30,6 +30,13 @@ import logging
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Tuple, List
+
+def _to_utc_aware(dt: datetime) -> datetime:
+    """Make a datetime timezone-aware (UTC), handling naive datetimes from MongoDB."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
 
 from auth import hash_password, verify_password, AUTHORITY_SECRET_KEY, IS_PRODUCTION
 from services.db import responders
@@ -169,7 +176,7 @@ def create_responder(
     if not isinstance(password, str) or password == "":
         raise ValueError("password must be a non-empty string")
     digest = hash_password(_peppered(password))
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     coll = responders()
     existing = _find(badge)
     caps = [str(c).strip().lower() for c in (capabilities or []) if str(c).strip()]
@@ -260,7 +267,7 @@ def _persist(rec: Dict[str, Any], fields: Dict[str, Any]) -> Dict[str, Any]:
     """
     rid = rec.get("responder_id")
     patch = dict(fields)
-    patch["updated_at"] = datetime.utcnow()
+    patch["updated_at"] = datetime.now(timezone.utc)
     coll = responders()
     if coll is not None:
         coll.update_one({"responder_id": rid}, {"$set": patch})
@@ -382,7 +389,7 @@ def issue_setup_token(responder_id: str) -> str:
     if _PROD and _setup_tokens_collection() is None:
         raise SetupStoreUnavailable("responder_setup_tokens store unavailable")
     token = _secrets.token_urlsafe(32)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     doc = {
         "token_hash": _token_digest(token),
         "responder_id": responder_id,
@@ -422,7 +429,7 @@ def consume_setup_token(token: str, password: str) -> Tuple[Optional[Dict[str, A
     if not isinstance(password, str) or len(password) < 12:
         return None, "weak_password"
     digest = _token_digest(token)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     tokens_coll = _setup_tokens_collection()
 
     # 1. Read the token state first so expiry/invalidation are reported honestly.
@@ -435,7 +442,7 @@ def consume_setup_token(token: str, password: str) -> Tuple[Optional[Dict[str, A
         return None, "invalid"
     if peek.get("used"):
         return None, "used"
-    if peek.get("expires_at") and peek["expires_at"] < now:
+    if peek.get("expires_at") and _to_utc_aware(peek["expires_at"]) < now:
         return None, "expired"
 
     # 2. Atomic single-use claim: exactly one caller can flip used False -> True.
@@ -503,7 +510,7 @@ def set_push_subscription(responder_id: str, subscription: Optional[Dict[str, An
         fields = {
             "push_subscription": subscription,
             "push_endpoint_hash": _hashlib.sha256(ep.encode("utf-8")).hexdigest(),
-            "push_subscribed_at": datetime.utcnow(),
+            "push_subscribed_at": datetime.now(timezone.utc),
         }
     return _persist(rec, fields)
 
@@ -544,18 +551,20 @@ def update_location(
     rec = _find_by_identity(responder_id)
     if not rec:
         return None
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     stamp = now
     if fix_time is not None:
         if fix_time.tzinfo is not None:
             fix_time = fix_time.astimezone(timezone.utc).replace(tzinfo=None)
-        if (fix_time - now).total_seconds() > FIX_CLOCK_SKEW_SECONDS:
+        # Clock-skew check: both sides must be naive (fix_time was stripped above; now may be tz-aware)
+        _now_naive = now.replace(tzinfo=None) if now.tzinfo is not None else now
+        if (fix_time - _now_naive).total_seconds() > FIX_CLOCK_SKEW_SECONDS:
             out = dict(rec)
             out["fix_rejected"] = "future_timestamp"
             return out
         stamp = fix_time
     current_ts = rec.get("location_updated_at")
-    if isinstance(current_ts, datetime) and stamp < current_ts:
+    if isinstance(current_ts, datetime) and _to_utc_aware(stamp) < _to_utc_aware(current_ts):
         out = dict(rec)
         out["fix_superseded"] = True
         return out
@@ -628,7 +637,7 @@ def availability_counts() -> Dict[str, int]:
         ts = rec.get("location_updated_at")
         if not isinstance(ts, datetime):
             return False
-        return (datetime.utcnow() - ts).total_seconds() <= _MAX_AGE
+        return (datetime.now(timezone.utc) - _to_utc_aware(ts)).total_seconds() <= _MAX_AGE
 
     for rec in list_responders():
         if not rec.get("active", False) or not rec.get("verified", False):
@@ -680,7 +689,7 @@ def _is_location_fresh(rec: Dict[str, Any], max_age_seconds: int) -> bool:
     ts = rec.get("location_updated_at")
     if not isinstance(ts, datetime):
         return False
-    return (datetime.utcnow() - ts).total_seconds() <= max_age_seconds
+    return (datetime.now(timezone.utc) - _to_utc_aware(ts)).total_seconds() <= max_age_seconds
 
 
 def is_location_fresh(rec: Dict[str, Any], max_age_seconds: int = 300) -> bool:
@@ -736,7 +745,7 @@ def find_eligible(
         if exclude:
             query["responder_id"] = {"$nin": list(exclude)}
         if max_age_seconds and max_age_seconds > 0:
-            query["location_updated_at"] = {"$gte": datetime.utcnow() - timedelta(seconds=max_age_seconds)}
+            query["location_updated_at"] = {"$gte": datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)}
         # $near already returns nearest-first; cap the scan with limit.
         return list(coll.find(query).limit(int(limit)))
 
@@ -787,7 +796,7 @@ def try_claim_for_dispatch(responder_id: str, dispatch_id: str) -> Optional[Dict
         "active": True,
         "duty_status": DUTY_ON,
     }
-    patch = {"status": "BUSY", "assigned_dispatch_id": dispatch_id, "updated_at": datetime.utcnow()}
+    patch = {"status": "BUSY", "assigned_dispatch_id": dispatch_id, "updated_at": datetime.now(timezone.utc)}
     coll = responders()
     if coll is not None:
         try:
@@ -819,7 +828,7 @@ def release_from_dispatch(responder_id: str, dispatch_id: Optional[str] = None) 
     match: Dict[str, Any] = {"responder_id": responder_id}
     if dispatch_id is not None:
         match["assigned_dispatch_id"] = dispatch_id
-    patch = {"status": "AVAILABLE", "assigned_dispatch_id": None, "updated_at": datetime.utcnow()}
+    patch = {"status": "AVAILABLE", "assigned_dispatch_id": None, "updated_at": datetime.now(timezone.utc)}
     coll = responders()
     if coll is not None:
         res = coll.update_one(match, {"$set": patch})

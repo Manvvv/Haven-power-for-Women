@@ -17,7 +17,7 @@ of AUTHORITY_SECRET_KEY after it is retired as a shared login credential.
 """
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Tuple
 
 from auth import hash_password, verify_password, AUTHORITY_SECRET_KEY, IS_PRODUCTION
@@ -87,7 +87,7 @@ def create_authority(
     if role not in ("authority", "police", "protection_officer", "admin"):
         raise ValueError("invalid authority role")
     digest = hash_password(_peppered(password))
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     coll = authority_accounts()
     existing = _find(badge)
     record = {
@@ -117,10 +117,10 @@ def set_active(badge_number: str, active: bool) -> bool:
     coll = authority_accounts()
     if coll is not None:
         coll.update_one({"badge_number": badge},
-                        {"$set": {"active": bool(active), "updated_at": datetime.utcnow()}})
+                        {"$set": {"active": bool(active), "updated_at": datetime.now(timezone.utc)}})
     else:
         rec["active"] = bool(active)
-        rec["updated_at"] = datetime.utcnow()
+        rec["updated_at"] = datetime.now(timezone.utc)
     return True
 
 
@@ -213,7 +213,7 @@ def set_role(identity: Optional[str], new_role: str) -> Tuple[Optional[Dict[str,
     if not rec:
         return None, "not_found"
     aid = rec.get("authority_id")
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     coll = authority_accounts()
     if coll is not None:
         coll.update_one({"authority_id": aid}, {"$set": {"role": new_role, "updated_at": now}})

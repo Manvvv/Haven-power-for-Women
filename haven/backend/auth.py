@@ -17,7 +17,7 @@ import logging
 import secrets
 import unicodedata
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 
 import jwt
 from fastapi import Header, HTTPException, status, Depends
@@ -221,7 +221,7 @@ def create_access_token(
     expires_delta: Optional[timedelta] = None
 ) -> str:
     """Create a signed JWT access token."""
-    expire = datetime.utcnow() + (expires_delta or timedelta(hours=JWT_EXPIRATION_HOURS))
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(hours=JWT_EXPIRATION_HOURS))
     payload = {
         "sub": user_id,
         "user_id": user_id,
@@ -229,7 +229,7 @@ def create_access_token(
         "email": email,
         "name": name,
         "exp": expire,
-        "iat": datetime.utcnow(),
+        "iat": datetime.now(timezone.utc),
         "iss": "haven-backend",
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)

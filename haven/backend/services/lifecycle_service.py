@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from services.db import sos_cases, sos_status_history
 from services.audit_service import log_audit
 
@@ -103,7 +103,7 @@ def transition_sos(case_id: str, new_status: str, actor_id: str, role: str, note
     if not is_valid_transition(current_status, new_status_upper):
         return False
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     cases_coll.update_one(
         {"case_id": case_id},
         {"$set": {"status": new_status_upper, "updated_at": now}}

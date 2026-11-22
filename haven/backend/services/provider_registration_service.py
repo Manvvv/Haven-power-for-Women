@@ -14,7 +14,7 @@ Architecture & Security:
 """
 import logging
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 from services.audit_service import log_audit
@@ -124,8 +124,8 @@ def submit_registration(
             if r.get("badge_number") == badge and r.get("status") == "PENDING_REVIEW":
                 raise RegistrationConflictError(f"A pending registration with badge '{badge}' is already under review.")
 
-    reg_id = f"PREG-{int(datetime.utcnow().timestamp())}-{secrets.token_hex(3).upper()}"
-    now = datetime.utcnow()
+    reg_id = f"PREG-{int(datetime.now(timezone.utc).timestamp())}-{secrets.token_hex(3).upper()}"
+    now = datetime.now(timezone.utc)
     caps = _normalize_caps(capabilities or ["general", "patrol"])
 
     doc: Dict[str, Any] = {
@@ -278,7 +278,7 @@ def approve_registration(
     except responder_service.SetupStoreUnavailable:
         raise RuntimeError("Provider setup token store is currently unavailable.")
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=responder_service.SETUP_TOKEN_TTL_SECONDS)
 
     update_fields = {
@@ -349,7 +349,7 @@ def reject_registration(
     if doc.get("status") != "PENDING_REVIEW":
         raise RegistrationStateError(f"Registration is not in PENDING_REVIEW state (currently '{doc.get('status')}').")
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     update_fields = {
         "status": "REJECTED",
         "rejection_reason": reason,
@@ -398,8 +398,8 @@ def submit_provider_request(
     if not target:
         raise RegistrationNotFoundError(f"Provider '{responder_id}' not found.")
 
-    req_id = f"PREQ-{int(datetime.utcnow().timestamp())}-{secrets.token_hex(3).upper()}"
-    now = datetime.utcnow()
+    req_id = f"PREQ-{int(datetime.now(timezone.utc).timestamp())}-{secrets.token_hex(3).upper()}"
+    now = datetime.now(timezone.utc)
 
     doc: Dict[str, Any] = {
         "request_id": req_id,
@@ -489,7 +489,7 @@ def review_provider_request(
 
     responder_id = doc["responder_id"]
     req_type = doc["request_type"]
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     notes = _normalize_str(review_notes, 500)
 
     if action == "approve":
