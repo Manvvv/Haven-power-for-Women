@@ -198,6 +198,14 @@ function severityTone(s?: string) {
 }
 
 /** Straight-line distance label (meters → m/km). Never implies routed travel. */
+function fmtDuration(secs?: number | null): string {
+  if (secs == null || !Number.isFinite(secs)) return '—'
+  if (secs < 60) return `${secs}s`
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return `${m}m ${s}s`
+}
+
 function fmtDistance(m: number | null): string {
   if (m == null) return 'distance unknown'
   if (m < 1000) return `${m} m away`
@@ -393,6 +401,8 @@ export default function RapidResponsePage() {
   const [networkCheckedAt, setNetworkCheckedAt] = useState<number | null>(null)
   // Presentation-only network filters (can only hide/reorder the real roster).
   const [netStatusFilter, setNetStatusFilter] = useState('')
+  const [emSeverityFilter, setEmSeverityFilter] = useState('')
+  const [emDispFilter, setEmDispFilter] = useState('')
   const [netSort, setNetSort] = useState<'status' | 'jurisdiction'>('status')
 
   // Human-approved dispatch confirmation modal.
@@ -443,12 +453,17 @@ export default function RapidResponsePage() {
       const base = sev === 'critical' ? 0 : sev === 'high' ? 1 : sev === 'medium' ? 2 : 3
       return (c.immediate_danger ? -1 : 0) + base
     }
-    return [...cases].sort((a, b) => {
+    let list = [...cases]
+    if (emSeverityFilter) list = list.filter((c) => (c.severity || '').toLowerCase() === emSeverityFilter)
+    if (emDispFilter === 'undispatched') list = list.filter((c) => !dispatchByCase.has(c.case_id))
+    else if (emDispFilter === 'active') list = list.filter((c) => { const d = dispatchByCase.get(c.case_id); return d && !isTerminal(d.status) })
+    else if (emDispFilter === 'resolved') list = list.filter((c) => { const d = dispatchByCase.get(c.case_id); return d && (d.status === 'RESOLVED' || d.status === 'HELP_PROVIDED') })
+    return list.sort((a, b) => {
       const r = rank(a) - rank(b)
       if (r !== 0) return r
       return (b.created_at || '').localeCompare(a.created_at || '')
     })
-  }, [cases])
+  }, [cases, emSeverityFilter, emDispFilter, dispatchByCase])
 
   // ── Auth presence (dashboard uses the same sessionStorage token) ────────────
   useEffect(() => {
@@ -989,10 +1004,25 @@ export default function RapidResponsePage() {
         }}>
           {/* ── Active Emergencies ─────────────────────────────────────────── */}
           <section>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
               <AlertTriangle size={18} color={C.accent} />
               <h2 style={{ fontSize: 16, fontWeight: 800, color: C.ink, margin: 0 }}>Active Emergencies</h2>
               <span style={{ fontSize: 12, color: C.muted }}>({emergencies.length})</span>
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <select aria-label="Filter incidents by severity" value={emSeverityFilter} onChange={(e) => setEmSeverityFilter(e.target.value)} style={selectStyle}>
+                  <option value="">All severities</option>
+                  <option value="critical">Critical</option>
+                  <option value="high">High</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low</option>
+                </select>
+                <select aria-label="Filter incidents by dispatch state" value={emDispFilter} onChange={(e) => setEmDispFilter(e.target.value)} style={selectStyle}>
+                  <option value="">All dispatch states</option>
+                  <option value="undispatched">Needs dispatch</option>
+                  <option value="active">Active dispatch</option>
+                  <option value="resolved">Resolved</option>
+                </select>
+              </div>
             </div>
 
             {emergencies.length === 0 ? (
@@ -1268,6 +1298,12 @@ export default function RapidResponsePage() {
                         <div style={{ fontSize: 12, borderTop: `1px solid ${C.line}`, paddingTop: 6, marginTop: 4 }}>
                           <span style={{ color: C.muted }}>Assigned unit:</span>{' '}
                           <strong style={{ color: '#166534' }}>{selectedDispatch.responder_label || 'Verified Response Unit'}</strong>
+                        </div>
+                      )}
+                      {(selectedDispatch.response_time_seconds != null || selectedDispatch.resolution_time_seconds != null) && (
+                        <div style={{ display: 'flex', gap: 14, fontSize: 12, borderTop: `1px solid ${C.line}`, paddingTop: 6, marginTop: 4 }}>
+                          <span><span style={{ color: C.muted }}>Accept time:</span> <strong>{fmtDuration(selectedDispatch.response_time_seconds)}</strong></span>
+                          <span><span style={{ color: C.muted }}>Resolution time:</span> <strong>{fmtDuration(selectedDispatch.resolution_time_seconds)}</strong></span>
                         </div>
                       )}
                     </div>

@@ -8,7 +8,11 @@ const nextConfig = {
     domains: ['res.cloudinary.com'],
   },
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'https://haven-power-for-women.onrender.com',
+    NEXT_PUBLIC_API_URL:
+      process.env.NEXT_PUBLIC_API_URL ||
+      (process.env.NODE_ENV === 'production'
+        ? 'https://haven-power-for-women.onrender.com'
+        : 'http://localhost:8000'),
   },
   // Fix for tunnel/external URL navigation
   assetPrefix: process.env.ASSET_PREFIX || '',

@@ -36,3 +36,35 @@ def valid_email(raw: str) -> bool:
     """True if `raw` is empty (email is optional) or a plausibly-valid address."""
     raw = (raw or "").strip()
     return raw == "" or bool(EMAIL_RE.match(raw))
+
+
+ALLOWED_RELATIONSHIPS = (
+    "family",
+    "parent",
+    "sibling",
+    "spouse_partner",
+    "friend",
+    "colleague",
+    "neighbor",
+    "counselor",
+    "other",
+)
+
+
+def normalize_relationship(raw: str) -> str:
+    """Normalize a contact relationship string into a safe canonical label."""
+    cleaned = re.sub(r"[^a-z0-9_\s/-]", "", (raw or "").strip().lower()).replace(" ", "_")
+    if not cleaned:
+        return "other"
+    if cleaned in ALLOWED_RELATIONSHIPS:
+        return cleaned
+    return cleaned[:40]
+
+
+def clamp_priority(raw, default: int = 1) -> int:
+    """Clamp contact priority into [1, 5] safely."""
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(5, val))

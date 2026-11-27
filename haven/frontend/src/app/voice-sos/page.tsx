@@ -14,6 +14,7 @@ import {
   deriveVoiceStatus, mapRecognitionError, VOICE_STATUS_META, type TriggerPhase,
 } from '@/lib/voiceSosStatus'
 import LiveResponseMap from '@/components/LiveResponseMap'
+import VoiceAudioRecorderPanel from '@/components/VoiceAudioRecorderPanel'
 import {
   getDispatchByCase, helpIsOnTheWay, DISPATCH_STATUS_LABEL, type VictimDispatchView,
 } from '@/lib/dispatch'
@@ -292,7 +293,7 @@ export default function VoiceSOSPage() {
   
   const [micPermission, setMicPermission] = useState<'granted' | 'denied' | 'pending'>('pending')
   const [locPermission, setLocPermission] = useState<'granted' | 'denied' | 'pending'>('pending')
-  const [currentLocation, setCurrentLocation] = useState<{lat: number, lng: number} | null>(null)
+  const [currentLocation, setCurrentLocation] = useState<{lat: number, lng: number, accuracy?: number | null, capturedAt?: string} | null>(null)
   const [sosAlertData, setSosAlertData] = useState<any>(null)
   const [showSOSModal, setShowSOSModal] = useState(false)
   const [accumulatedText, setAccumulatedText] = useState('')
@@ -638,46 +639,53 @@ export default function VoiceSOSPage() {
     window.location.href = smsUrl
   }
 
-  const startLocationStreaming = (eventId: string) => {
+  const startLocationStreaming = async (eventId: string) => {
     if (typeof window === 'undefined') return
     try {
+      let token = ''
+      try {
+        if ((window as any).Clerk?.session) {
+          token = (await (window as any).Clerk.session.getToken()) || ''
+        }
+      } catch { /* fallback to REST */ }
+
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const wsHost = (API.replace(/^https?:\/\//, '') || 'localhost:8000')
-      const ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/track/${eventId}?role=broadcaster`)
-      
-      ws.onopen = () => {
-        setIsStreamingLocation(true)
-        if (currentLocation) {
-          ws.send(JSON.stringify({
-            latitude: currentLocation.lat,
-            longitude: currentLocation.lng,
-            // accuracy omitted: cached location has no fresh GPS accuracy reading.
-            // Interval-based getCurrentPosition calls below use pos.coords.accuracy.
-            timestamp: new Date().toISOString()
-          }))
+      const ws = token
+        ? new WebSocket(`${wsProtocol}//${wsHost}/ws/track/${encodeURIComponent(eventId)}?token=${encodeURIComponent(token)}&role=broadcaster`)
+        : null
+
+      if (ws) {
+        ws.onopen = () => {
+          setIsStreamingLocation(true)
+          if (currentLocation) {
+            ws.send(JSON.stringify({
+              latitude: currentLocation.lat,
+              longitude: currentLocation.lng,
+              timestamp: currentLocation.capturedAt || new Date().toISOString()
+            }))
+          }
         }
+        ws.onerror = () => {
+          console.log('Live tracking WS fallback')
+        }
+        trackingWsRef.current = ws
       }
-
-      ws.onerror = () => {
-        console.log('Live tracking WS fallback')
-      }
-
-      trackingWsRef.current = ws
 
       if (streamIntervalRef.current) clearInterval(streamIntervalRef.current)
       streamIntervalRef.current = setInterval(() => {
         if (navigator.geolocation) {
           navigator.geolocation.getCurrentPosition((pos) => {
-            const locData = {
+            const locData: Record<string, unknown> = {
               event_id: eventId,
               latitude: pos.coords.latitude,
               longitude: pos.coords.longitude,
-              accuracy: pos.coords.accuracy || 5.0,
-              speed: pos.coords.speed || 0.0,
-              heading: pos.coords.heading || 0.0,
-              timestamp: new Date().toISOString()
+              timestamp: new Date(pos.timestamp || Date.now()).toISOString()
             }
-            if (ws.readyState === WebSocket.OPEN) {
+            if (Number.isFinite(pos.coords.accuracy)) locData.accuracy = pos.coords.accuracy
+            if (pos.coords.speed != null && Number.isFinite(pos.coords.speed)) locData.speed = pos.coords.speed
+            if (pos.coords.heading != null && Number.isFinite(pos.coords.heading)) locData.heading = pos.coords.heading
+            if (ws && ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify(locData))
             } else {
               secureFetch('/sos/location-update', {
@@ -852,30 +860,37 @@ export default function VoiceSOSPage() {
     }
   }
 
-  const getLocation = (): Promise<{lat: number, lng: number}> => {
+  const getLocation = (): Promise<{lat: number, lng: number, accuracy?: number | null, capturedAt?: string} | null> => {
     return new Promise((resolve) => {
       if (!navigator.geolocation) {
-        resolve(currentLocation || { lat: 0, lng: 0 })
+        resolve(currentLocation || null)
         return
       }
+
+      const toLoc = (pos: GeolocationPosition) => ({
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+        accuracy: Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null,
+        capturedAt: new Date(pos.timestamp || Date.now()).toISOString(),
+      })
 
       // Try High Accuracy first (6s timeout)
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+          const coords = toLoc(pos)
           setCurrentLocation(coords)
           resolve(coords)
         },
         () => {
-          // Fallback to low accuracy / IP geolocation (6s timeout)
+          // Fallback to low accuracy / network geolocation (6s timeout)
           navigator.geolocation.getCurrentPosition(
             (pos) => {
-              const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+              const coords = toLoc(pos)
               setCurrentLocation(coords)
               resolve(coords)
             },
             () => {
-              resolve(currentLocation || { lat: 0, lng: 0 })
+              resolve(currentLocation || null)
             },
             { enableHighAccuracy: false, timeout: 6000, maximumAge: 60000 }
           )
@@ -890,7 +905,12 @@ export default function VoiceSOSPage() {
     try {
       geoWatchRef.current = navigator.geolocation.watchPosition(
         (pos) => {
-          const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+          const coords = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            accuracy: Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null,
+            capturedAt: new Date(pos.timestamp || Date.now()).toISOString(),
+          }
           setCurrentLocation(coords)
           setLocPermission('granted')
           if (typeof window !== 'undefined') {
@@ -1328,14 +1348,18 @@ export default function VoiceSOSPage() {
     stopListening()
 
     let succeeded = false
-    let lat = currentLocation?.lat || 0
-    let lng = currentLocation?.lng || 0
+    let lat: number | null = currentLocation?.lat ?? null
+    let lng: number | null = currentLocation?.lng ?? null
+    let locAccuracy: number | null = currentLocation?.accuracy ?? null
+    let locCapturedAt: string | undefined = currentLocation?.capturedAt
     
     try {
       const loc = await getLocation()
-      if (loc.lat || loc.lng) {
+      if (loc && Number.isFinite(loc.lat) && Number.isFinite(loc.lng)) {
         lat = loc.lat
         lng = loc.lng
+        locAccuracy = loc.accuracy ?? null
+        locCapturedAt = loc.capturedAt
       }
     } catch (e) {
       console.log('Location fetch error, using cached:', currentLocation)
@@ -1355,7 +1379,8 @@ export default function VoiceSOSPage() {
           hashed_safe_word: safeWordHash || undefined,
           latitude: lat,
           longitude: lng,
-          location_accuracy: 5.0,
+          location_accuracy: locAccuracy,
+          location_captured_at: locCapturedAt,
           timestamp: new Date().toISOString(),
           // transcript: the raw recent speech text for the backend's n-gram
           // PBKDF2 fallback when spoken_phrase alone doesn't match (e.g. user
@@ -1852,6 +1877,11 @@ export default function VoiceSOSPage() {
           )
         })()}
 
+        <VoiceAudioRecorderPanel
+          userId={userId}
+          onIncidentCreated={(caseId) => { setDispatchCaseId(caseId); fetchHistory() }}
+        />
+
         {/* Setup Section */}
         <div style={styles.card}>
           <h2 style={styles.cardTitle}>Configuration</h2>
@@ -2005,7 +2035,10 @@ export default function VoiceSOSPage() {
 
         {/* Trusted Contacts */}
         <div style={styles.card}>
-          <h2 style={styles.cardTitle}><Phone size={24} /> Trusted Contacts ({contacts.length}/5)</h2>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: "0.6rem" }}>
+            <h2 style={{ ...styles.cardTitle, marginBottom: 0 }}><Phone size={24} /> Trusted Contacts ({contacts.length}/5)</h2>
+            <Link href="/safe-contacts" style={{ fontSize: "0.82rem", fontWeight: 700, color: colors.primary, textDecoration: "none" }}>Edit, Verify &amp; Check-In →</Link>
+          </div>
           
           {contacts.map(c => (
             <div key={c.contact_id || c.name} style={{...styles.historyItem, padding: '0.75rem 0'}}>

@@ -1,4 +1,4 @@
-﻿"""Rapid Response Network dispatch orchestration (deterministic, human-approved).
+"""Rapid Response Network dispatch orchestration (deterministic, human-approved).
 
 This is the engine behind the /dispatch/* and /responder/* endpoints. Its design
 is governed by five hard rules:
@@ -456,6 +456,19 @@ def public_view(d: Dict[str, Any], audience: str) -> Dict[str, Any]:
     timed_out = sum(1 for a in all_attempts if a.get("response") == A_TIMEOUT)
     cancelled = sum(1 for a in all_attempts if a.get("response") == A_CANCELLED)
     # Re-read after counts if we used find above - need fresh for base
+    # Compute genuine response/resolution timing metrics when timestamps exist.
+    response_time_seconds = None
+    resolution_time_seconds = None
+    c_dt = d.get("created_at")
+    a_dt = d.get("assigned_at")
+    r_dt = d.get("resolved_at")
+    if isinstance(c_dt, datetime) and isinstance(a_dt, datetime):
+        _c, _a = _cmp_pair(c_dt, a_dt)
+        response_time_seconds = max(0, int((_a - _c).total_seconds()))
+    if isinstance(c_dt, datetime) and isinstance(r_dt, datetime):
+        _c, _r = _cmp_pair(c_dt, r_dt)
+        resolution_time_seconds = max(0, int((_r - _c).total_seconds()))
+
     base.update({
         "created_by": d.get("created_by"),
         "created_by_role": d.get("created_by_role"),
@@ -472,6 +485,8 @@ def public_view(d: Dict[str, Any], audience: str) -> Dict[str, Any]:
         "eligible_provider_count": d.get("eligible_provider_count", len(d.get("tried_responder_ids", []))),
         "broadcast_attempt_ids": d.get("broadcast_attempt_ids", []),
         "resolved_at": _iso(d.get("resolved_at")),
+        "response_time_seconds": response_time_seconds,
+        "resolution_time_seconds": resolution_time_seconds,
         "cancel_reason": d.get("cancel_reason") or "",
         # Wave-aware fields (authority only, backend-owned).
         "radius_waves": d.get("radius_waves") or waves,
@@ -1537,6 +1552,11 @@ def resolve_dispatch_for_case(case_id: str, actor_id: str, role: str) -> Tuple[O
     _safe_audit(actor_id, role, "DISPATCH_RESOLVED", case_id, "success",
                 "case_resolved", {"dispatch_id": d.get("dispatch_id")})
     notify: List[Dict[str, Any]] = []
+    vi = _notify_user_intent(d.get("victim_user_id"), "dispatch_resolved", {
+        "dispatch_id": d.get("dispatch_id"), "case_id": case_id, "status": RESOLVED,
+        "message": "Your emergency case has been resolved."})
+    if vi:
+        notify.append(vi)
     if assigned:
         ri = _notify_user_intent(assigned, "dispatch_resolved", {
             "dispatch_id": d.get("dispatch_id"), "case_id": case_id, "status": RESOLVED,

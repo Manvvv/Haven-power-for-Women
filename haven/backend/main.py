@@ -1,4 +1,4 @@
-﻿"""Haven Women Safety Platform - Main Backend Application Entry Point."""
+"""Haven Women Safety Platform - Main Backend Application Entry Point."""
 import os
 import logging
 from urllib.parse import urlsplit
@@ -244,15 +244,21 @@ allowed_origins = resolve_cors_origins(
 )
 
 # Browsers reject `allow_origins=*` (or a ".*" regex) together with
-# allow_credentials=True. Use the explicit allowlist so credentialed requests work.
+# allow_credentials=True. Production keeps the explicit HTTPS allowlist only;
+# development also permits any local loopback port (e.g. :3000, :3001 when
+# Next.js falls back to another port) without ever touching production.
+dev_cors_origin_regex = (
+    None if IS_PRODUCTION else r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=dev_cors_origin_regex,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
-logger.info(f"CORS allowlist: {allowed_origins}")
+logger.info(f"CORS allowlist: {allowed_origins} (dev_regex={'enabled' if dev_cors_origin_regex else 'disabled'})")
 
 # ─── Live GPS WebSocket Tracking & Location Stream ──────────
 # Shared, dependency-free telemetry validator (also used by the REST location
@@ -330,7 +336,7 @@ def _authorize_ws_event(token: Optional[str], event_id: str):
     (via ValueError) the caller turns into a clean close. No event_id trust:
     authorization is derived from the verified token + the event's owner.
     """
-    from auth import decode_token
+    from auth import decode_token, _check_user_active
     from services.db import sos_events
     from fastapi import HTTPException as _HTTPException
 
@@ -345,6 +351,10 @@ def _authorize_ws_event(token: Optional[str], event_id: str):
 
     user_id = claims.get("user_id") or claims.get("sub")
     role = (claims.get("role") or "user").lower()
+    try:
+        _check_user_active(user_id, role)
+    except _HTTPException:
+        raise ValueError((WS_FORBIDDEN, "account suspended"))
 
     events_coll = sos_events()
     if events_coll is None:
@@ -483,7 +493,7 @@ def _authorize_ws_dispatch(token: Optional[str], dispatch_id: str):
       * an authority/admin may SUBSCRIBE (read-only).
       * anyone else is rejected.
     """
-    from auth import decode_token
+    from auth import decode_token, _check_user_active
     from fastapi import HTTPException as _HTTPException
     from services import dispatch_service as _ds
 
@@ -498,6 +508,10 @@ def _authorize_ws_dispatch(token: Optional[str], dispatch_id: str):
 
     user_id = claims.get("user_id") or claims.get("sub")
     role = (claims.get("role") or "user").lower()
+    try:
+        _check_user_active(user_id, role)
+    except _HTTPException:
+        raise ValueError((WS_FORBIDDEN, "account suspended"))
 
     d = _ds.get_dispatch(dispatch_id)
     if not d:
@@ -630,6 +644,8 @@ from routers.analytics_routes import router as analytics_router
 from routers.privacy_routes import router as privacy_router
 from routers.search_routes import router as search_router
 from routers.dispatch_routes import router as dispatch_router
+from routers.checkin_routes import router as checkin_router
+from routers.demo_routes import router as demo_router
 # shake_sos_routes removed — website-only deployment
 
 app.include_router(auth_router)
@@ -649,6 +665,8 @@ app.include_router(analytics_router)
 app.include_router(privacy_router)
 app.include_router(search_router)
 app.include_router(dispatch_router)
+app.include_router(checkin_router)
+app.include_router(demo_router)
 
 
 # --- Rapid Response Network: background escalation sweeper -------------------
@@ -703,15 +721,17 @@ async def _lifespan(application):
     except Exception:
         pass
 
-    # 3. Launch sweeper
+    # 3. Launch sweeper (RRN dispatch expirations + persisted safety check-in timers)
     async def _sweep_loop():
-        from services import dispatch_service
+        from services import dispatch_service, checkin_service
         from services.dispatch_notify import emit_intents as _emit
         while True:
             try:
                 await _asyncio.sleep(_SWEEP_INTERVAL_SECONDS)
                 result = await _asyncio.to_thread(dispatch_service.process_expirations)
                 await _emit(result.get("notify"))
+                chk = await _asyncio.to_thread(checkin_service.process_due_checkins)
+                await _emit(chk.get("notify"))
             except _asyncio.CancelledError:
                 break
             except Exception:

@@ -13,7 +13,7 @@ Verifies:
  10. All-offers-exhausted produces FAILED.
  11. Duplicate accept is idempotent; lost race gets 409 offer_unavailable.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import _rrn_test_support  # installs shims if needed
 
 from services import dispatch_service as ds
@@ -58,7 +58,7 @@ def run_verification():
             "duty_status": "ON_DUTY",
             "status": "AVAILABLE",
             "current_location": {"type": "Point", "coordinates": [p["lng"], p["lat"]]},
-            "location_updated_at": datetime.utcnow(),
+            "location_updated_at": datetime.now(timezone.utc),
         })
 
     # Verify eligibility query

@@ -25,7 +25,7 @@ Validates the full 18-step operational sequence:
 22. Revocation request workflow permanently removes authorization
 """
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 from main import app
@@ -262,7 +262,7 @@ class TestCompleteProviderLifecycleE2E:
                 "severity": "critical",
                 "location": f"{inc_lat},{inc_lng}",
                 "summary": "Urgent distress call in South Delhi area",
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
             })
 
         dispatch_res = client.post(

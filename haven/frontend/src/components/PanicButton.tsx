@@ -12,21 +12,32 @@ export default function PanicButton({ size = 'large' }: PanicButtonProps) {
   const [progress, setProgress] = useState(0)
   const [fired, setFired] = useState(false)
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'getting' | 'got' | 'failed'>('idle')
-  const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null)
+  const [location, setLocation] = useState<{ lat: number; lng: number; accuracy?: number | null; capturedAt?: string } | null>(null)
   const [showSetup, setShowSetup] = useState(false)
   const [contactNumber, setContactNumber] = useState('')
   const [savedContact, setSavedContact] = useState('')
   const [contactName, setContactName] = useState('')
   const [savedName, setSavedName] = useState('')
   const [showConfirm, setShowConfirm] = useState(false)
+  const [queuedId, setQueuedId] = useState<string | null>(null)
 
   const holdTimer = useRef<ReturnType<typeof setInterval> | null>(null)
   const progressRef = useRef(0)
   const HOLD_MS = 3000
 
+  const getClerkToken = useCallback(async (): Promise<string | null> => {
+    try {
+      if (typeof window !== 'undefined' && (window as any).Clerk?.session) {
+        return (await (window as any).Clerk.session.getToken()) || null
+      }
+    } catch { /* offline / unauthenticated */ }
+    return null
+  }, [])
+
   // Offline-first: record the panic SOS to the backend, queuing it in IndexedDB
   // first so it is never lost and is retried automatically when back online.
-  const { submitSOS, isOnline } = useOfflineStatus()
+  const { submitSOS, isOnline, queue } = useOfflineStatus(getClerkToken)
+  const submittedItem = queuedId ? queue.find((q) => q.id === queuedId) : undefined
 
   // Load the trusted contact from ENCRYPTED at-rest storage. One-time migration:
   // if a legacy plaintext localStorage contact exists, move it into the encrypted
@@ -62,13 +73,18 @@ export default function PanicButton({ size = 'large' }: PanicButtonProps) {
     }
   }, [])
 
-  const getGPS = useCallback((): Promise<{ lat: number; lng: number } | null> => {
+  const getGPS = useCallback((): Promise<{ lat: number; lng: number; accuracy: number | null; capturedAt: string } | null> => {
     return new Promise(resolve => {
-      if (!navigator.geolocation) { resolve(null); return }
+      if (!navigator.geolocation) { setGpsStatus('failed'); resolve(null); return }
       setGpsStatus('getting')
       navigator.geolocation.getCurrentPosition(
         pos => {
-          const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+          const coords = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            accuracy: Number.isFinite(pos.coords.accuracy) ? Math.round(pos.coords.accuracy) : null,
+            capturedAt: new Date(pos.timestamp || Date.now()).toISOString(),
+          }
           setLocation(coords)
           setGpsStatus('got')
           resolve(coords)
@@ -106,7 +122,7 @@ export default function PanicButton({ size = 'large' }: PanicButtonProps) {
     // Record the panic SOS to the backend through the offline-first queue.
     // If offline, it is stored locally and delivered automatically on reconnect.
     try {
-      await submitSOS({
+      const qId = await submitSOS({
         type: 'panic',
         endpoint: '/save-extracted-data',
         message: 'Panic button activated — user reported immediate danger.',
@@ -114,14 +130,18 @@ export default function PanicButton({ size = 'large' }: PanicButtonProps) {
         longitude: coords?.lng ?? null,
         payload: {
           decoded_text: 'PANIC BUTTON ACTIVATED — user reported being in immediate danger.',
+          category: 'immediate_danger',
           severity: 'critical',
           immediate_danger: true,
           trigger_type: 'panic',
-          location: coords ? `${coords.lat},${coords.lng}` : '',
+          location: coords ? `${coords.lat},${coords.lng}` : 'Location unavailable',
+          location_accuracy: coords?.accuracy ?? undefined,
+          location_captured_at: coords?.capturedAt ?? undefined,
           needs: ['immediate_assistance'],
           summary: 'Panic button held for 3s. Treat as high-priority.',
         },
       })
+      setQueuedId(qId)
     } catch { /* queued locally even if this throws */ }
 
     // Copy location to clipboard
@@ -352,7 +372,19 @@ document.body.removeChild(a)
               {location && <><br /><strong style={{ color: '#15803d' }}>📍 Location copied to clipboard!</strong></>}
               <br />
               {isOnline ? (
-                <span style={{ color: '#15803d' }}>Your alert is being delivered to Haven authorities.</span>
+                submittedItem?.caseId ? (
+                  <span style={{ color: '#15803d', fontWeight: 700 }}>
+                    Confirmed by server (Ref: {submittedItem.caseId}).
+                  </span>
+                ) : submittedItem?.status === 'failed' ? (
+                  <span style={{ color: '#b91c1c', fontWeight: 600 }}>
+                    Delivery failed — saved locally and retrying. Call 112 if in danger.
+                  </span>
+                ) : (
+                  <span style={{ color: '#b45309' }}>
+                    Queued for server confirmation (status: {submittedItem?.status || 'sending'})…
+                  </span>
+                )
               ) : (
                 <span style={{ color: '#c2410c' }}>
                   You are offline — your alert is saved and will be sent to authorities automatically when you reconnect.

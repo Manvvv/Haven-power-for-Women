@@ -84,10 +84,11 @@ CLERK_JWKS_URL = (os.getenv("CLERK_JWKS_URL") or "").strip() or (
     f"{CLERK_ISSUER}/.well-known/jwks.json" if CLERK_ISSUER else ""
 )
 # When true, tokens that cannot be cryptographically verified are REJECTED outright.
-# Defaults to TRUE in production (fail closed) and FALSE in local development.
+# Production MUST enforce strict auth (cannot silently downgrade via env var).
 # An unverifiable external token can NEVER grant an elevated (authority/admin) role
 # regardless of this flag — role is forced to "user".
-STRICT_AUTH = _env_bool("STRICT_AUTH", IS_PRODUCTION)
+_RAW_STRICT_AUTH = os.getenv("STRICT_AUTH")
+STRICT_AUTH = True if IS_PRODUCTION else _env_bool("STRICT_AUTH", False)
 
 # Lazy, cached JWKS client (PyJWT ships PyJWKClient; it fetches + caches Clerk keys).
 _jwks_client = None
@@ -123,6 +124,8 @@ def _verify_clerk_token(token: str) -> Optional[Dict[str, Any]]:
     Returns the verified claims dict, or None if verification is not possible.
     Raises HTTPException only for tokens that are present but definitively invalid.
     """
+    if not CLERK_JWKS_URL:
+        return None
     client = _get_jwks_client()
     if client is None:
         return None  # JWKS not configured — caller decides how to degrade
@@ -165,6 +168,11 @@ def _validate_production_config() -> None:
         missing.append("CLERK_ISSUER")
     if not CLERK_JWKS_URL:
         missing.append("CLERK_JWKS_URL")
+    # Use the module-level STRICT_AUTH bool (already resolved from env at import time
+    # and overridable via monkeypatch in tests) rather than re-reading os.getenv so
+    # that test isolation works correctly when other test modules set the env var.
+    if not STRICT_AUTH:
+        missing.append("STRICT_AUTH=true")
     if missing:
         raise RuntimeError(
             "HAVEN refuses to start in production with insecure or missing secrets: "
@@ -242,6 +250,8 @@ def decode_token(token: str) -> Dict[str, Any]:
     Security model:
       1. Haven-internal HS256 tokens (issued by our own authority/user login) are the ONLY
          source of elevated roles. They are verified against JWT_SECRET with a fixed issuer.
+         HS256 decode uses algorithm allow-list [HS256] only — RS256/asymmetric tokens can
+         NEVER be accepted on this path regardless of key material.
       2. Clerk (external) RS256 tokens are cryptographically verified against Clerk's JWKS
          when CLERK_ISSUER / CLERK_JWKS_URL is configured. A verified Clerk token may carry
          an elevated role only via trusted metadata.
@@ -249,24 +259,45 @@ def decode_token(token: str) -> Dict[str, Any]:
            - STRICT_AUTH=true  -> reject (401)
            - STRICT_AUTH=false -> accept as an unprivileged "user" for identity only.
              It can NEVER yield an authority/admin role. (dev convenience)
+      4. Algorithm confusion guard: if the token header declares RS256 (or any asymmetric
+         alg) the internal HS256 path will reject it on signature (PyJWTError), and the
+         Clerk JWKS path is the only valid route. If JWKS is unavailable and the token
+         header is asymmetric, STRICT_AUTH mode rejects immediately.
 
     This closes the previous bypass where any token with a forged `role` claim was trusted.
     """
-    # 1. Internal Haven token (trusted for elevated roles)
+    # 0. Algorithm confusion early-exit: peek at the unverified header.
+    #    If the token declares an asymmetric algorithm (RS256, ES256, PS256 …) it cannot
+    #    be a valid Haven-internal HS256 token.  Skip step 1 and go directly to Clerk
+    #    JWKS verification.  This prevents any theoretical confusion between the two paths.
+    _skip_internal = False
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM], issuer="haven-backend")
-    except jwt.ExpiredSignatureError:
-        raise _auth_error("internal_expired")
-    except jwt.InvalidIssuerError:
-        pass  # not an internal token — try Clerk below
-    except jwt.PyJWTError:
-        pass  # signature/format mismatch for internal — try Clerk below
+        _hdr = jwt.get_unverified_header(token)
+        _alg = (_hdr.get("alg") or "").upper()
+        if _alg and _alg != "HS256":
+            _skip_internal = True
+    except Exception:
+        pass  # malformed header — both paths will fail gracefully below
+
+    # 1. Internal Haven token (trusted for elevated roles)
+    if not _skip_internal:
+        try:
+            return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM], issuer="haven-backend")
+        except jwt.ExpiredSignatureError:
+            raise _auth_error("internal_expired")
+        except jwt.InvalidIssuerError:
+            pass  # not an internal token — try Clerk below
+        except jwt.PyJWTError:
+            pass  # signature/format mismatch for internal — try Clerk below
 
     # 2. Clerk token, cryptographically verified against JWKS (if configured)
     try:
         verified = _verify_clerk_token(token)
     except jwt.ExpiredSignatureError:
         raise _auth_error("clerk_expired")
+    except jwt.PyJWKClientError:
+        logger.warning("Auth: Clerk verification unavailable (reason=jwks_unavailable)")
+        verified = None
     except jwt.PyJWTError:
         # Token claims to be from Clerk but fails verification -> definitively invalid.
         # (Raw library text, key IDs and issuer details are never returned.)
@@ -291,7 +322,7 @@ def decode_token(token: str) -> Dict[str, Any]:
         }
 
     # 3. Unverifiable token (no JWKS configured, not an internal token)
-    if STRICT_AUTH:
+    if STRICT_AUTH or IS_PRODUCTION:
         # Do not disclose which verification mechanism is (un)configured.
         raise _auth_error("unverifiable_strict")
     try:
@@ -333,6 +364,27 @@ def get_optional_user(authorization: Optional[str] = Header(None)) -> Optional[A
         return None
 
 
+def _check_user_active(user_id: str, role: str) -> None:
+    """Reject suspended end-user accounts even if they hold a valid JWT."""
+    if role != "user" or not user_id or user_id in ("anon", "anonymous"):
+        return
+    try:
+        from services.db import get_collection
+        users_coll = get_collection("users")
+        if users_coll is None:
+            return
+        rec = users_coll.find_one({"user_id": user_id}, {"_id": 0, "active": 1})
+        if rec and rec.get("active") is False:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This account has been suspended. Contact an administrator.",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+
 def get_current_user(authorization: Optional[str] = Header(None)) -> AuthUser:
     """FastAPI dependency requiring a valid Bearer token."""
     if not authorization:
@@ -349,9 +401,12 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> AuthUser:
             headers={"WWW-Authenticate": "Bearer"},
         )
     payload = decode_token(token)
+    uid = payload.get("user_id") or payload.get("sub", "anon")
+    role = payload.get("role", "user")
+    _check_user_active(uid, role)
     return AuthUser(
-        user_id=payload.get("user_id") or payload.get("sub", "anon"),
-        role=payload.get("role", "user"),
+        user_id=uid,
+        role=role,
         email=payload.get("email"),
         name=payload.get("name"),
         is_authenticated=True,

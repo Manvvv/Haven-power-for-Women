@@ -26,6 +26,10 @@ const PLAN_FIELDS: { key: string; label: string; hint: string }[] = [
   { key: 'professional_contacts', label: 'Professional contacts', hint: 'Counsellor, doctor or helpline I can call.' },
   { key: 'things_to_remove_or_avoid', label: 'Things to keep away for now', hint: 'What I want to avoid when I am not doing well.' },
   { key: 'emergency_contacts', label: 'Emergency contacts', hint: 'Who to reach in an emergency. (Your notes only.)' },
+  { key: 'personal_safety_considerations', label: 'Personal safety considerations', hint: 'Passwords, exit routes, medical/childcare notes for leaving safely.' },
+  { key: 'emergency_preparation', label: 'Emergency go-bag & preparation', hint: 'Cash, spare keys, charger, clothes, essentials prepared ahead.' },
+  { key: 'important_documents', label: 'Important documents & IDs', hint: 'Where Aadhaar, passport, bank records, certificates are stored.' },
+  { key: 'personal_notes', label: 'Personal reminders & grounding notes', hint: 'Anything else that reminds you of your strength and choices.' },
 ]
 
 type PlanState = Record<string, string>   // field -> newline-separated text
@@ -56,6 +60,7 @@ export default function SafetyPlanPage() {
 
   // Privacy
   const [privacy, setPrivacy] = useState<any | null>(null)
+  const [supportResources, setSupportResources] = useState<any[]>([])
 
   const flash = useCallback((m: string) => { setMsg(m); setTimeout(() => setMsg(''), 3500) }, [])
 
@@ -86,6 +91,24 @@ export default function SafetyPlanPage() {
       if (!res.ok) throw new Error('save failed')
       flash('Safety plan saved securely.'); setPlanExists(true); loadPlan()
     } catch { flash('Could not save right now. Please try again.') } finally { setSaving(false) }
+  }
+
+  const exportPlanCopy = () => {
+    const ok = window.confirm('Export an unencrypted JSON copy of your safety plan to your device? Anyone with access to your Downloads folder could read that file.')
+    if (!ok) return
+    const payload: Record<string, unknown> = {
+      exported_at: new Date().toISOString(),
+      disclaimer: 'User-controlled copy exported from HAVEN. Not clinical or legal advice.',
+      safety_plan: Object.fromEntries(PLAN_FIELDS.map(f => [f.key, (plan[f.key] || '').split('\n').map(s => s.trim()).filter(Boolean)])),
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `haven-safety-plan-${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    flash('Safety plan copy downloaded.')
   }
 
   const deletePlan = async () => {
@@ -159,7 +182,12 @@ export default function SafetyPlanPage() {
 
   useEffect(() => {
     if (!isSignedIn) return
-    if (tab === 'plan') loadPlan()
+    if (tab === 'plan') {
+      loadPlan()
+      secureFetch('/therapy/resources?category=all').then(r => r.ok ? r.json() : null).then(d => {
+        if (d) setSupportResources([...(d.emergency || []), ...(d.crisis || []), ...(d.support || [])].slice(0, 8))
+      }).catch(() => {})
+    }
     else if (tab === 'checkin') loadCheckins()
     else if (tab === 'journal') loadJournal()
     else if (tab === 'privacy') loadPrivacy()
@@ -242,6 +270,13 @@ export default function SafetyPlanPage() {
                 style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'linear-gradient(135deg,#be185d,#9d174d)', color: 'white', border: 'none', borderRadius: 10, padding: '11px 20px', fontWeight: 700, cursor: saving ? 'wait' : 'pointer', fontSize: '0.85rem' }}>
                 <Save size={15} /> {saving ? 'Saving…' : 'Save safely'}
               </button>
+              <button type="button" onClick={exportPlanCopy}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'white', color: '#be185d', border: '1px solid rgba(190,24,93,0.3)', borderRadius: 10, padding: '11px 18px', fontWeight: 700, cursor: 'pointer', fontSize: '0.85rem' }}>
+                Export Copy (.json)
+              </button>
+              <Link href="/safe-contacts" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#fdf2f8', color: '#be185d', border: '1px solid rgba(190,24,93,0.25)', borderRadius: 10, padding: '11px 16px', fontWeight: 700, fontSize: '0.85rem', textDecoration: 'none' }}>
+                Manage Live Trusted Contacts →
+              </Link>
               {planExists && (
                 <button onClick={deletePlan}
                   style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'white', color: '#b91c1c', border: '1px solid rgba(220,38,38,0.3)', borderRadius: 10, padding: '11px 18px', fontWeight: 700, cursor: 'pointer', fontSize: '0.85rem' }}>
@@ -249,6 +284,20 @@ export default function SafetyPlanPage() {
                 </button>
               )}
             </div>
+
+            {supportResources.length > 0 && (
+              <div style={{ marginTop: 20, background: 'white', borderRadius: 14, padding: 16, border: '1px solid rgba(190,24,93,0.12)' }}>
+                <div style={{ fontWeight: 700, color: '#be185d', fontSize: '0.85rem', marginBottom: 8 }}>Verified Emergency &amp; Support Resources</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 8 }}>
+                  {supportResources.map((r, idx) => (
+                    <a key={r.id || idx} href={`tel:${r.number}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '9px 11px', borderRadius: 9, background: '#fdf2f8', textDecoration: 'none', color: '#1a0a12', fontSize: '0.78rem' }}>
+                      <span style={{ fontWeight: 600 }}>{r.name}</span>
+                      <strong style={{ color: '#be185d' }}>{r.number}</strong>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
         {tab === 'checkin' && (

@@ -62,6 +62,8 @@ export interface AuthorityDispatchView {
   accept_timeout_seconds?: number | null
   attempts_made?: number
   resolved_at?: string | null
+  response_time_seconds?: number | null
+  resolution_time_seconds?: number | null
   cancel_reason?: string
   eligible_provider_count?: number
   offers_pending?: number
@@ -290,6 +292,13 @@ export async function getResponderActiveDispatch(): Promise<ResponderOffer | nul
   const res = await secureFetch('/responder/active-dispatch', {}, getResponderToken() || undefined)
   const data = await asJson<{ dispatch: ResponderOffer | null }>(res)
   return data.dispatch
+}
+
+/** Past assignments handled by the authenticated responder (no victim PII). */
+export async function getResponderHistory(limit = 20): Promise<ResponderOffer[]> {
+  const res = await secureFetch(`/responder/history?limit=${limit}`, {}, getResponderToken() || undefined)
+  const data = await asJson<{ history: ResponderOffer[] }>(res)
+  return data.history || []
 }
 
 async function responderDispatchAction(

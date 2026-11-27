@@ -57,7 +57,62 @@ class TrustedContactModel(BaseModel):
     name: str = Field(..., max_length=100)
     phone: str = Field(..., max_length=30)
     email: Optional[str] = Field("", max_length=120)
+    relationship: Optional[str] = Field("other", max_length=40)
     priority: int = Field(1, ge=1, le=10)
+
+
+class TrustedContactEditModel(BaseModel):
+    name: Optional[str] = Field(None, max_length=100)
+    phone: Optional[str] = Field(None, max_length=30)
+    email: Optional[str] = Field(None, max_length=120)
+    relationship: Optional[str] = Field(None, max_length=40)
+    priority: Optional[int] = Field(None, ge=1, le=5)
+
+
+class TrustedContactVerifyModel(BaseModel):
+    mode: str = Field("confirm_manual", pattern="^(confirm_manual|send_sms_otp)$")
+    manual_verified: bool = True
+
+
+class TrustedContactNotifyModel(BaseModel):
+    case_id: Optional[str] = Field(None, max_length=100)
+    contact_ids: Optional[List[str]] = None
+    include_location: bool = True
+    location_text: Optional[str] = Field("", max_length=300)
+    incident_summary: Optional[str] = Field("", max_length=500)
+    explicit_consent: bool = False
+
+
+class SafetyCheckinCreateModel(BaseModel):
+    duration_minutes: int = Field(..., ge=5, le=720)
+    reminder_before_minutes: int = Field(5, ge=1, le=60)
+    activity_label: Optional[str] = Field("", max_length=200)
+    consent_acknowledged: bool = False
+    allow_contact_escalation: bool = False
+    allow_authority_escalation: bool = False
+    manual_location: Optional[str] = Field("", max_length=300)
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+
+class SafetyCheckinExtendModel(BaseModel):
+    extra_minutes: int = Field(15, ge=5, le=240)
+
+
+class VoiceTranscribeModel(BaseModel):
+    audio_base64: str = Field(..., max_length=14_000_000)
+    mime_type: str = Field("audio/webm", max_length=60)
+    language: str = Field("auto", max_length=12)
+
+
+class VoiceExtractModel(BaseModel):
+    transcript: str = Field(..., max_length=3000)
+    language: Optional[str] = Field("auto", max_length=12)
+
+
+class AdminUserStatusModel(BaseModel):
+    active: bool
+    reason: Optional[str] = Field("", max_length=300)
 
 class VoiceSOSConfigModel(BaseModel):
     user_id: str
@@ -73,15 +128,17 @@ class VoiceSOSTriggerModel(BaseModel):
     user_id: str
     spoken_phrase: Optional[str] = None
     hashed_safe_word: Optional[str] = None
-    latitude: float = 0.0
-    longitude: float = 0.0
-    location_accuracy: float = 0.0
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    location_accuracy: Optional[float] = None
+    location_captured_at: Optional[str] = None
     timestamp: Optional[str] = ""
     # Optional voice-AI metadata (Voice AI pipeline). No raw audio is stored.
     transcript: Optional[str] = Field(None, max_length=2000)
     intent: Optional[str] = Field(None, max_length=30)
     severity: Optional[str] = Field(None, max_length=20)
     risk_score: Optional[int] = Field(None, ge=0, le=100)
+    mode: Optional[str] = Field(None, max_length=30)
 
 class VoiceAnalyzeModel(BaseModel):
     """Analyze a speech transcript: intent + reuse the existing risk classifier."""
@@ -251,6 +308,25 @@ class SOSStatusTransitionModel(BaseModel):
     notes: Optional[str] = ""
 
 
+class SOSReportModel(BaseModel):
+    """Structured direct website SOS submission with explicit location metadata."""
+    category: str = Field(..., min_length=2, max_length=60)
+    description: Optional[str] = Field("", max_length=2000)
+    immediate_danger: bool = True
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    location_accuracy: Optional[float] = None
+    location_captured_at: Optional[str] = Field(None, max_length=64)
+    location_source: str = Field("unavailable", max_length=24)  # gps | manual | unavailable
+    manual_location: Optional[str] = Field("", max_length=300)
+    idempotency_key: Optional[str] = Field(None, max_length=200)
+    notify_contacts: bool = False
+    trigger_type: str = Field("website_sos", max_length=40)
+    voice_transcript: Optional[str] = Field(None, max_length=2000)
+    ai_suggested_urgency: Optional[str] = Field(None, max_length=30)
+    mentioned_location: Optional[str] = Field(None, max_length=200)
+
+
 # ─────────── Mental Health / Therapy (safety-first emotional support) ───────────
 # These power the upgraded /therapy/* endpoints. Deterministic safety triage runs
 # BEFORE any LLM call; crisis/medication answers never depend on a model. Sensitive
@@ -307,6 +383,10 @@ class SafetyPlanModel(BaseModel):
     things_to_remove_or_avoid: List[str] = Field(default_factory=list)
     professional_contacts: List[str] = Field(default_factory=list)
     emergency_contacts: List[str] = Field(default_factory=list)
+    personal_safety_considerations: List[str] = Field(default_factory=list)
+    emergency_preparation: List[str] = Field(default_factory=list)
+    important_documents: List[str] = Field(default_factory=list)
+    personal_notes: List[str] = Field(default_factory=list)
 
 
 class MoodCheckinModel(BaseModel):

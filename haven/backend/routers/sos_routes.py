@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, HTTPException
 from auth import AuthUser, get_optional_user, get_current_user, require_self_or_authority, encrypt_evidence_payload
 from rate_limiter import rate_limit_dependency
-from services.db import sos_cases, sos_events, serialize_doc
+from services.db import sos_cases, sos_events, sos_status_history, trusted_contacts, serialize_doc
 from services.stego_service import (
     encode_message_in_image,
     decode_message,
@@ -22,7 +22,7 @@ from services.lifecycle_service import transition_sos, canonical_status, is_term
 from services.notification_service import notification_manager
 from services.audit_service import log_audit
 from services.incident_location import canonical_coord_fields
-from models.schemas import EvidenceUploadModel, LocationUpdateModel
+from models.schemas import EvidenceUploadModel, LocationUpdateModel, SOSReportModel
 
 logger = logging.getLogger("haven_backend")
 router = APIRouter(tags=["SOS"])
@@ -246,6 +246,7 @@ async def save_extracted_data(
         "decoded_text": decoded_text,
         "image_url": body.get("image_url"),
         "hashtags": body.get("hashtags", []),
+        "category": str(body.get("category") or "other")[:60],
         "severity": body.get("severity", "unknown"),
         "summary": body.get("summary", ""),
         "location": body.get("location", ""),
@@ -257,6 +258,7 @@ async def save_extracted_data(
         "case_id": case_id,
         "user_id": user.user_id if user else "anonymous",
         "trigger_type": body.get("trigger_type") or "steganography",
+        "is_demo": False,
         "embedding": embedding,
     }
     if idempotency_key:
@@ -267,11 +269,20 @@ async def save_extracted_data(
     lng = body.get("longitude")
     if lat is not None and lng is not None:
         try:
-            doc["latitude"] = float(lat)
-            doc["longitude"] = float(lng)
-            doc["location_freshness"] = str(body.get("location_freshness", "FRESH"))
-            if body.get("location_accuracy") is not None:
-                doc["location_accuracy"] = float(body.get("location_accuracy"))
+            f_lat = float(lat)
+            f_lng = float(lng)
+            if _finite_in_range(f_lat, -90.0, 90.0) and _finite_in_range(f_lng, -180.0, 180.0):
+                doc["latitude"] = f_lat
+                doc["longitude"] = f_lng
+                doc["location_freshness"] = str(body.get("location_freshness", "FRESH"))
+                if body.get("location_accuracy") is not None:
+                    f_acc = float(body.get("location_accuracy"))
+                    if _finite_in_range(f_acc, 0.0, 100000.0):
+                        doc["location_accuracy"] = f_acc
+                if isinstance(body.get("location_captured_at"), str) and body.get("location_captured_at"):
+                    doc["location_captured_at"] = body.get("location_captured_at")[:64]
+            else:
+                doc.update(canonical_coord_fields(location_text=doc.get("location", "")))
         except (ValueError, TypeError):
             doc.update(canonical_coord_fields(location_text=doc.get("location", "")))
     else:
@@ -519,3 +530,409 @@ async def sos_location_update(
     if update.heading is not None:
         resp["heading"] = update.heading
     return resp
+
+
+# ─── Direct Website SOS Report & User-Owned Incident Tracking ───────────────
+
+_ALLOWED_SOS_CATEGORIES = frozenset({
+    "immediate_danger",
+    "stalking",
+    "domestic_violence",
+    "harassment",
+    "assault",
+    "medical",
+    "unsafe_transit",
+    "other",
+})
+
+
+def _safe_user_incident_view(doc: dict, *, include_dispatch: bool = True) -> dict:
+    """Project an SOS case for the incident owner (strips internal/embedding fields)."""
+    out = dict(doc)
+    out.pop("embedding", None)
+    out.pop("abuse_signal", None)
+    evid = out.get("evidence")
+    if isinstance(evid, dict):
+        # Never return raw encrypted evidence blobs in the list view.
+        out["evidence"] = {
+            "evidence_id": evid.get("evidence_id"),
+            "has_audio": bool(evid.get("has_audio")),
+            "has_image": bool(evid.get("has_image")),
+            "captured_at": evid.get("captured_at"),
+            "tamper_verified": bool(evid.get("tamper_verified")),
+        }
+    out["status"] = canonical_status(out.get("status", "CREATED"))
+    if include_dispatch and out.get("case_id"):
+        try:
+            from services import dispatch_service
+            d = dispatch_service.get_dispatch_by_case(out["case_id"])
+            out["dispatch"] = dispatch_service.public_view(d, "victim") if d else None
+        except Exception:
+            out["dispatch"] = None
+    return serialize_doc(out)
+
+
+@router.post("/sos/report")
+async def report_website_sos(
+    payload: SOSReportModel,
+    current_user: AuthUser = Depends(get_current_user),
+    _=Depends(rate_limit_dependency(max_requests=30, window_seconds=60)),
+):
+    """Authenticated direct website SOS submission with category, location metadata,
+    duplicate prevention, persistent storage, and optional contact notification.
+    """
+    cases_coll = sos_cases()
+    if cases_coll is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Storage temporarily unavailable. Please try again or call 112 immediately.",
+        )
+
+    cat = (payload.category or "").strip().lower().replace(" ", "_")
+    if cat not in _ALLOWED_SOS_CATEGORIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid category. Choose one of: {', '.join(sorted(_ALLOWED_SOS_CATEGORIES))}",
+        )
+
+    loc_source = (payload.location_source or "unavailable").strip().lower()
+    if loc_source not in ("gps", "manual", "unavailable"):
+        raise HTTPException(status_code=422, detail="location_source must be gps, manual, or unavailable.")
+
+    manual_loc = (payload.manual_location or "").strip()
+    if loc_source == "manual" and not manual_loc:
+        raise HTTPException(status_code=422, detail="Please enter a manual location or landmark.")
+
+    has_coords = payload.latitude is not None or payload.longitude is not None
+    if has_coords:
+        if payload.latitude is None or payload.longitude is None:
+            raise HTTPException(status_code=422, detail="Both latitude and longitude are required.")
+        if not _finite_in_range(payload.latitude, -90.0, 90.0) or not _finite_in_range(payload.longitude, -180.0, 180.0):
+            raise HTTPException(status_code=422, detail="Invalid GPS coordinates.")
+        if payload.location_accuracy is not None and not _finite_in_range(payload.location_accuracy, 0.0, 100000.0):
+            raise HTTPException(status_code=422, detail="Invalid location accuracy.")
+
+    # Duplicate prevention 1: idempotency_key scoped to this user
+    if payload.idempotency_key:
+        existing = cases_coll.find_one({
+            "idempotency_key": payload.idempotency_key,
+            "user_id": current_user.user_id,
+            "is_demo": {"$ne": True},
+        })
+        if existing:
+            return {
+                "success": True,
+                "case_id": existing.get("case_id"),
+                "status": canonical_status(existing.get("status", "RECEIVED")),
+                "duplicate": True,
+                "message": "Existing incident reference preserved (duplicate prevented).",
+            }
+
+    desc = (payload.description or "").strip()
+    loc_text = (
+        f"{payload.latitude}, {payload.longitude}"
+        if payload.latitude is not None and payload.longitude is not None
+        else (manual_loc or (payload.mentioned_location or "").strip() or "Location unavailable")
+    )
+
+    # Duplicate prevention 2: guard rapid identical resubmission within 15s
+    recent_candidates = list(cases_coll.find(
+        {"user_id": current_user.user_id, "category": cat, "is_demo": {"$ne": True}},
+        {"_id": 0},
+    ).sort("created_at", -1).limit(3))
+    now_dt = datetime.now(timezone.utc)
+    for rc in recent_candidates:
+        if is_terminal_status(rc.get("status", "")):
+            continue
+        c_at = rc.get("created_at")
+        if isinstance(c_at, datetime):
+            c_aware = c_at.replace(tzinfo=timezone.utc) if c_at.tzinfo is None else c_at
+            if (now_dt - c_aware).total_seconds() <= 15 and (rc.get("description") or "") == desc and (rc.get("location") or "") == loc_text:
+                return {
+                    "success": True,
+                    "case_id": rc.get("case_id"),
+                    "status": canonical_status(rc.get("status", "RECEIVED")),
+                    "duplicate": True,
+                    "message": "Duplicate submission prevented — active incident already recorded.",
+                }
+
+    # Advisory deterministic risk check (never overrides immediate danger)
+    severity = "critical" if payload.immediate_danger else "high"
+    risk_meta = None
+    analysis_text = desc or payload.voice_transcript or f"Emergency category: {cat}"
+    try:
+        from services.risk_classifier import RiskClassifier
+        risk_meta = RiskClassifier().classify(analysis_text)
+        if not payload.immediate_danger and isinstance(risk_meta, dict) and risk_meta.get("severity"):
+            severity = str(risk_meta["severity"]).lower()
+    except Exception:
+        risk_meta = None
+
+    case_id = f"HAVEN-{int(now_dt.timestamp())}-{secrets.token_hex(3)}"
+    decoded_text = desc or f"Website SOS reported ({cat.replace('_', ' ')}). Location: {loc_text}"
+    case_doc = {
+        "case_id": case_id,
+        "user_id": current_user.user_id,
+        "trigger_type": (payload.trigger_type or "website_sos")[:40],
+        "category": cat,
+        "description": desc,
+        "decoded_text": decoded_text,
+        "summary": desc[:240] if desc else f"Website SOS ({cat.replace('_', ' ')})",
+        "nature_of_abuse": cat.replace("_", " "),
+        "severity": severity,
+        "immediate_danger": bool(payload.immediate_danger),
+        "needs": ["Emergency Response", "Safety Verification"],
+        "location": loc_text,
+        "location_source": loc_source,
+        "manual_location": manual_loc,
+        "status": "CREATED",
+        "is_demo": False,
+        "created_at": now_dt,
+        "updated_at": now_dt,
+        "has_evidence": False,
+    }
+    if payload.idempotency_key:
+        case_doc["idempotency_key"] = payload.idempotency_key
+    if payload.latitude is not None and payload.longitude is not None:
+        case_doc["latitude"] = float(payload.latitude)
+        case_doc["longitude"] = float(payload.longitude)
+        case_doc["location_freshness"] = "FRESH"
+        if payload.location_accuracy is not None:
+            case_doc["location_accuracy"] = float(payload.location_accuracy)
+        if payload.location_captured_at:
+            case_doc["location_captured_at"] = payload.location_captured_at
+    if payload.voice_transcript or payload.ai_suggested_urgency or payload.mentioned_location:
+        case_doc["voice_analysis"] = {
+            "transcript": (payload.voice_transcript or "")[:2000],
+            "ai_suggested_urgency": payload.ai_suggested_urgency,
+            "mentioned_location": payload.mentioned_location,
+            "gps_confirmed": bool(payload.latitude is not None and payload.longitude is not None),
+        }
+    if risk_meta:
+        case_doc["advisory_risk"] = {
+            "severity": risk_meta.get("severity"),
+            "risk_score": risk_meta.get("risk_score"),
+            "indicators": risk_meta.get("indicators", []),
+            "advisory_only": True,
+        }
+
+    try:
+        cases_coll.insert_one(case_doc)
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not persist your emergency incident. Please try again or call 112.",
+        )
+
+    # Also store sos_events row so WebSocket tracking / REST location updates work cleanly.
+    events_coll = sos_events()
+    if events_coll is not None:
+        try:
+            events_coll.insert_one({
+                "event_id": case_id,
+                "user_id": current_user.user_id,
+                "trigger_type": case_doc["trigger_type"],
+                "category": cat,
+                "timestamp": now_dt.isoformat(),
+                "latitude": case_doc.get("latitude"),
+                "longitude": case_doc.get("longitude"),
+                "location_accuracy": case_doc.get("location_accuracy"),
+                "location_captured_at": case_doc.get("location_captured_at"),
+                "status": "RECEIVED",
+                "is_test": False,
+                "is_demo": False,
+                "created_at": now_dt,
+            })
+        except Exception:
+            pass
+
+    # Transition CREATED -> RECEIVED cleanly so lifecycle history records submission.
+    try:
+        transition_sos(case_id, "RECEIVED", current_user.user_id, "user", notes="Submitted via HAVEN website")
+    except Exception:
+        pass
+
+    # Optional user-consented trusted contact SMS notification (credential-gated, honest status)
+    contact_notifications = []
+    if payload.notify_contacts:
+        tc_coll = trusted_contacts()
+        contacts = list(tc_coll.find({"user_id": current_user.user_id}, {"_id": 0})) if tc_coll is not None else []
+        if contacts:
+            from services.sms_service import notify_trusted_contacts
+            sms_body = (
+                f"HAVEN Emergency Alert (Ref: {case_id})\n"
+                f"Category: {cat.replace('_', ' ')}\n"
+                f"Location: {loc_text}\n"
+                f"Time: {now_dt.isoformat()}"
+            )
+            results = notify_trusted_contacts(contacts, case_id, sms_body)
+            contact_notifications = [r.to_safe_dict() for r in results]
+            cases_coll.update_one(
+                {"case_id": case_id},
+                {"$set": {"contact_notifications": contact_notifications}},
+            )
+
+    try:
+        log_audit(
+            actor_id=current_user.user_id,
+            role=current_user.role,
+            action="SOS_REPORT_SUBMITTED",
+            case_id=case_id,
+            result="success",
+            metadata={"category": cat, "location_source": loc_source, "trigger_type": case_doc["trigger_type"]},
+        )
+    except Exception:
+        pass
+
+    title = "New Emergency SOS Reported"
+    msg = f"Incident {case_id} ({cat.replace('_', ' ')}) — Severity: {severity.upper()}"
+    try:
+        nid = notification_manager.create_notification(
+            recipient_id="all_authorities",
+            event_type="NEW_SOS",
+            title=title,
+            message=msg,
+            case_id=case_id,
+        )
+        await notification_manager.notify_authorities("NEW_SOS", {
+            "notification_id": nid,
+            "title": title,
+            "message": msg,
+            "case_id": case_id,
+            "severity": severity,
+            "category": cat,
+            "trigger_type": case_doc["trigger_type"],
+            "created_at": now_dt.isoformat(),
+        })
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "case_id": case_id,
+        "status": "RECEIVED",
+        "category": cat,
+        "severity": severity,
+        "location": loc_text,
+        "location_source": loc_source,
+        "created_at": now_dt.isoformat(),
+        "duplicate": False,
+        "contact_notifications": contact_notifications,
+        "live_tracking_ws_url": f"/ws/track/{case_id}",
+    }
+
+
+@router.get("/sos/my-incidents")
+def get_my_incidents(
+    limit: int = 20,
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """Return the authenticated user's own real (non-demo) SOS incidents."""
+    cases_coll = sos_cases()
+    if cases_coll is None:
+        return {"incidents": [], "total": 0}
+    bounded_limit = max(1, min(int(limit or 20), 50))
+    rows = list(
+        cases_coll.find(
+            {"user_id": current_user.user_id, "is_demo": {"$ne": True}},
+            {"_id": 0, "embedding": 0},
+        )
+        .sort("created_at", -1)
+        .limit(bounded_limit)
+    )
+    incidents = [_safe_user_incident_view(r) for r in rows]
+    return {"incidents": incidents, "total": len(incidents)}
+
+
+@router.get("/sos/incidents/{case_id}")
+def get_incident_detail(
+    case_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """Get a single incident + lifecycle timeline (owner or authority/admin only)."""
+    cases_coll = sos_cases()
+    if cases_coll is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    case = cases_coll.find_one({"case_id": case_id, "is_demo": {"$ne": True}}, {"_id": 0, "embedding": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    require_self_or_authority(str(case.get("user_id", "")), current_user)
+
+    history_coll = sos_status_history()
+    history = []
+    if history_coll is not None:
+        history = [
+            serialize_doc(h)
+            for h in history_coll.find({"case_id": case_id}, {"_id": 0}).sort("timestamp", 1)
+        ]
+
+    return {
+        "incident": _safe_user_incident_view(case),
+        "lifecycle": history,
+    }
+
+
+@router.post("/sos/incidents/{case_id}/cancel")
+async def cancel_incident(
+    case_id: str,
+    body: Optional[dict] = Body(None),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """Allow the incident owner (or an authority) to cancel an open incident."""
+    cases_coll = sos_cases()
+    if cases_coll is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    case = cases_coll.find_one({"case_id": case_id, "is_demo": {"$ne": True}}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    require_self_or_authority(str(case.get("user_id", "")), current_user)
+
+    current_status = canonical_status(case.get("status", "CREATED"))
+    if is_terminal_status(current_status):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Incident is already in terminal state '{current_status}' and cannot be cancelled.",
+        )
+
+    reason = ""
+    if isinstance(body, dict):
+        reason = str(body.get("reason") or "").strip()[:300]
+
+    ok = transition_sos(
+        case_id=case_id,
+        new_status="CANCELLED",
+        actor_id=current_user.user_id,
+        role=current_user.role,
+        notes=reason or "Cancelled by user",
+    )
+    if not ok:
+        raise HTTPException(status_code=409, detail="Could not cancel incident from current state.")
+
+    try:
+        from main import tracking_manager, dispatch_manager
+        tracking_manager.purge_location(case_id)
+        from services import dispatch_service
+        from services.dispatch_notify import emit_intents
+        active_d = dispatch_service.get_active_dispatch_for_case(case_id)
+        if active_d:
+            _d, _err, _notify = dispatch_service.cancel_dispatch(
+                active_d.get("dispatch_id"),
+                current_user.user_id,
+                current_user.role,
+                reason=reason or "Incident cancelled by user",
+            )
+            dispatch_manager.purge_location(active_d.get("dispatch_id"))
+            await emit_intents(_notify)
+    except Exception:
+        pass
+
+    try:
+        await notification_manager.notify_authorities("SOS_CANCELLED", {
+            "title": "Incident Cancelled",
+            "message": f"Incident {case_id} was cancelled ({reason or 'by reporter'}).",
+            "case_id": case_id,
+        })
+    except Exception:
+        pass
+
+    return {"success": True, "case_id": case_id, "status": "CANCELLED"}

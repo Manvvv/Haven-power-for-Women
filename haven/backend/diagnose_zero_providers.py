@@ -18,7 +18,7 @@ Usage:
 import sys
 import os
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Load .env before imports
 from dotenv import load_dotenv
@@ -123,7 +123,7 @@ def main():
             print()
             continue
 
-        age_seconds = (datetime.utcnow() - location_ts).total_seconds()
+        age_seconds = (datetime.now(timezone.utc) - location_ts).total_seconds()
         print(f"    Location age: {age_seconds:.1f}s (max allowed: {RESPONDER_LOCATION_MAX_AGE_SECONDS}s)")
 
         if age_seconds > RESPONDER_LOCATION_MAX_AGE_SECONDS:

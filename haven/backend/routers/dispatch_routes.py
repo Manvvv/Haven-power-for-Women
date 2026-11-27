@@ -1,4 +1,4 @@
-﻿"""Rapid Response Network HTTP API — human-approved dispatch + responder actions.
+"""Rapid Response Network HTTP API — human-approved dispatch + responder actions.
 
 Endpoint groups and their trust boundary:
 
@@ -621,6 +621,26 @@ def responder_active_dispatch_endpoint(current_user: AuthUser = Depends(require_
         # Record points at a dispatch that is not (any longer) ours — report none.
         return {"dispatch": None}
     return {"dispatch": dispatch_service.public_view(d, "responder")}
+
+
+@router.get("/responder/history")
+def responder_history_endpoint(
+    limit: int = 20,
+    current_user: AuthUser = Depends(require_responder),
+):
+    """Return this responder's own completed / past dispatch history (no victim PII)."""
+    from services.db import dispatch_requests
+    coll = dispatch_requests()
+    if coll is None:
+        return {"history": [], "total": 0}
+    bounded = max(1, min(int(limit or 20), 50))
+    rows = list(
+        coll.find({"assigned_responder_id": current_user.user_id}, {"_id": 0})
+        .sort("updated_at", -1)
+        .limit(bounded)
+    )
+    history = [dispatch_service.public_view(d, "responder") for d in rows]
+    return {"history": history, "total": len(history)}
 
 
 @router.post("/responder/status")

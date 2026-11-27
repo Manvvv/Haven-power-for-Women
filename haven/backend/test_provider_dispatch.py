@@ -21,7 +21,7 @@ Covers:
 """
 import inspect
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import _rrn_test_support  # noqa: F401
 
@@ -99,7 +99,7 @@ def test_provider_created_is_not_offered_until_verified():
     rec = rs.create_responder_inert(badge_number="PRV-200", officer_name="U")
     rs._persist(rec, {"duty_status": "ON_DUTY", "status": "AVAILABLE",
                       "current_location": {"type": "Point", "coordinates": [INC_LNG, INC_LAT]},
-                      "location_updated_at": datetime.utcnow()})
+                      "location_updated_at": datetime.now(timezone.utc)})
     res = create_dispatch("CASE-UNVER")
     assert res["eligible_provider_count"] == 0
 
@@ -124,7 +124,7 @@ def test_setup_token_expired_is_rejected():
     rs.mark_password_unset(rec["responder_id"])
     tok = rs.issue_setup_token(rec["responder_id"])
     digest = rs._token_digest(tok)
-    rs._setup_tokens_memory[digest]["expires_at"] = datetime.utcnow() - timedelta(seconds=1)
+    rs._setup_tokens_memory[digest]["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
     _, err = rs.consume_setup_token(tok, "a-long-enough-pass")
     assert err == "expired"
 
@@ -246,12 +246,12 @@ def test_vapid_private_key_never_in_client_or_payload(monkeypatch):
     monkeypatch.setattr(wp, "VAPID_SUBJECT", "mailto:ops@example.org")
     monkeypatch.setattr(wp, "_pywebpush", lambda: object())
     assert wp.public_key_for_client() == "PUB-KEY-VALUE"
-    payload = wp.build_payload("RRN-1", "CRITICAL", 1800, datetime.utcnow() + timedelta(seconds=20))
+    payload = wp.build_payload("RRN-1", "CRITICAL", 1800, datetime.now(timezone.utc) + timedelta(seconds=20))
     assert "PRIV-SECRET-VALUE" not in repr(payload)
 
 
 def test_push_payload_has_no_victim_pii_or_location():
-    payload = wp.build_payload("RRN-9", "CRITICAL", 1800, datetime.utcnow() + timedelta(seconds=20))
+    payload = wp.build_payload("RRN-9", "CRITICAL", 1800, datetime.now(timezone.utc) + timedelta(seconds=20))
     blob = repr(payload)
     assert payload["title"] == "HAVEN EMERGENCY REQUEST"
     assert "Priority: CRITICAL" in payload["body"] and "1.8 km" in payload["body"]
@@ -352,7 +352,7 @@ def test_accepted_dispatch_never_expands():
     did = res["dispatch"]["dispatch_id"]
     ds.accept_offer(did, p["responder_id"])
     before = ds.get_dispatch(did)["current_wave_index"]
-    ds.process_expirations(now=datetime.utcnow() + timedelta(days=1))
+    ds.process_expirations(now=datetime.now(timezone.utc) + timedelta(days=1))
     after = ds.get_dispatch(did)
     assert after["status"] == "ACCEPTED"
     assert after["current_wave_index"] == before
@@ -397,7 +397,7 @@ def test_expired_offer_cannot_be_accepted():
     reset_state()
     p = mk_responder("EXP-1", *near(), on_duty=True)
     did = create_dispatch("CASE-EXP")["dispatch"]["dispatch_id"]
-    ds.process_expirations(now=datetime.utcnow() + timedelta(days=1))
+    ds.process_expirations(now=datetime.now(timezone.utc) + timedelta(days=1))
     _, err, _ = ds.accept_offer(did, p["responder_id"])
     assert err is not None
 

@@ -177,7 +177,7 @@ export default function HomePage() {
                   }}
                 >
                   <Mic size={16} color="#7c3aed" />
-                  <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#5b21b6' }}>Voice SOS</span>
+                  <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#5b21b6' }}>{t('voiceSosTitle')}</span>
                 </div>
 
                 <div
@@ -297,6 +297,16 @@ export default function HomePage() {
           >
             <Radio size={18} /> Responder Portal
           </button>
+          <button
+            onClick={() => navigate('/demo')}
+            style={{
+              fontSize: 'clamp(0.85rem, 2vw, 1rem)', padding: 'clamp(12px,2vw,15px) clamp(20px,3vw,30px)',
+              background: '#fff', color: '#6d28d9', border: '2px solid #ddd6fe', borderRadius: 10,
+              fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8,
+            }}
+          >
+            {t('demoModeBtn')}
+          </button>
         </div>
 
         <p style={{ marginTop: 16, fontSize: '0.8rem', color: '#be185d', padding: '0 16px' }}>
@@ -309,7 +319,7 @@ export default function HomePage() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: 16 }}>
           {[
             { icon: <Eye size={28} style={{ color: '#be185d' }} />, title: t('discreeSOS'), desc: t('discreSOSDesc'), href: '/sos', color: '#fce7f3', accent: '#be185d' },
-            { icon: <Mic size={28} style={{ color: '#7c3aed' }} />, title: 'Voice SOS', desc: 'Set up a secret voice code to silently trigger emergency alerts', href: '/voice-sos', color: '#f5f0ff', accent: '#7c3aed' },
+            { icon: <Mic size={28} style={{ color: '#7c3aed' }} />, title: t('voiceSosTitle'), desc: t('voiceSosCardDesc'), href: '/voice-sos', color: '#f5f0ff', accent: '#7c3aed' },
             { icon: <Heart size={28} style={{ color: '#db2777' }} />, title: t('mentalHealth'), desc: t('mentalHealthDesc'), href: '/therapy', color: '#fdf2f8', accent: '#db2777' },
             { icon: <Scale size={28} style={{ color: '#9d174d' }} />, title: t('legalGuidance'), desc: t('legalGuidanceDesc'), href: '/legal', color: '#f5f0ff', accent: '#9d174d' },
             { icon: <MessageCircle size={28} style={{ color: '#be185d' }} />, title: t('authorityDB'), desc: t('authorityDBDesc'), href: '/authority', color: '#fce7f3', accent: '#be185d' },

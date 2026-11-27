@@ -18,7 +18,7 @@ import {
   ResponderSelf, ResponderOffer, ResponderStatus,
   getResponderToken, setResponderSession, clearResponderSession,
   responderMe, setResponderStatus, setResponderDuty, postResponderLocation, getResponderOffers,
-  getResponderActiveDispatch, acceptOffer, declineOffer, markEnRoute, markArrived,
+  getResponderActiveDispatch, getResponderHistory, acceptOffer, declineOffer, markEnRoute, markArrived,
   markHelpProvided, helpIsOnTheWay, DISPATCH_STATUS_LABEL, DispatchStatus,
 } from '@/lib/dispatch'
 import { routeProvider, formatDistance, externalNavUrl } from '@/lib/mapProvider'
@@ -42,6 +42,7 @@ export default function ResponderPage() {
   const [me, setMe] = useState<ResponderSelf | null>(null)
   const [offers, setOffers] = useState<ResponderOffer[]>([])
   const [active, setActive] = useState<ResponderOffer | null>(null)
+  const [history, setHistory] = useState<ResponderOffer[]>([])
   const [fix, setFix] = useState<GeoFix | null>(null)
   const [trail, setTrail] = useState<Array<{ lat: number; lng: number }>>([])
   const [fitNonce, setFitNonce] = useState(0)
@@ -122,12 +123,14 @@ export default function ResponderPage() {
   const refresh = useCallback(async () => {
     if (!getResponderToken()) return
     try {
-      const [meRec, activeRec] = await Promise.all([
+      const [meRec, activeRec, histRec] = await Promise.all([
         responderMe().catch(() => null),
         getResponderActiveDispatch().catch(() => null),
+        getResponderHistory(15).catch(() => []),
       ])
       if (meRec) setMe(meRec)
       setActive(activeRec)
+      setHistory(Array.isArray(histRec) ? histRec : [])
       // Offers are only meaningful when not already committed to an assignment.
       if (activeRec) {
         setOffers([])
@@ -629,6 +632,28 @@ export default function ResponderPage() {
             onDecline={onDecline}
           />
         )}
+
+        {/* Response history (responder's own past dispatches — no victim PII) */}
+        <div style={S.card}>
+          <div style={S.cardTitle}>Response History ({history.length})</div>
+          {history.length === 0 ? (
+            <div style={{ color: '#64748b', fontSize: '0.84rem' }}>No past dispatch assignments recorded yet.</div>
+          ) : (
+            <div style={{ display: 'grid', gap: 8 }}>
+              {history.slice(0, 8).map((h) => (
+                <div key={h.dispatch_id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: '10px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#0f172a', fontFamily: 'monospace' }}>{h.dispatch_id}</div>
+                    <div style={{ fontSize: '0.76rem', color: '#64748b' }}>Case: {h.case_id}{h.required_capability ? ` · ${h.required_capability}` : ''}</div>
+                  </div>
+                  <span style={{ fontSize: '0.72rem', fontWeight: 800, padding: '3px 9px', borderRadius: 999, background: '#f1f5f9', color: '#334155' }}>
+                    {DISPATCH_STATUS_LABEL[h.status as DispatchStatus] || h.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Full-screen incoming-offer modal — rendered on top of everything. */}

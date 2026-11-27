@@ -25,7 +25,7 @@ Runs under pytest, OR standalone (`python test_rapid_response_network.py`) via a
 tiny built-in runner for environments without pytest installed.
 """
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import _rrn_test_support  # noqa: F401  (installs dep shims only when missing)
 
@@ -105,7 +105,7 @@ def mk_responder(badge, lng, lat, status="AVAILABLE", verified=True, active=True
     rec = rs.get_responder(badge)
     if verified:
         rs.set_verified(rec["responder_id"], True)
-    ts = datetime.utcnow() if fresh else datetime.utcnow() - timedelta(seconds=10 ** 6)
+    ts = datetime.now(timezone.utc) if fresh else datetime.now(timezone.utc) - timedelta(seconds=10 ** 6)
     rs._persist(rec, {
         "status": status,
         "duty_status": "ON_DUTY" if on_duty else "OFF_DUTY",
@@ -341,7 +341,7 @@ def test_timeout_escalates_then_fails_when_exhausted():
     mk_responder("ONLY", *near())
     d = create_dispatch(case_id="CASE-TO")["dispatch"]
     # Force the outstanding offer to be expired, then run the idempotent sweep.
-    future = datetime.utcnow() + timedelta(seconds=10 ** 6)
+    future = datetime.now(timezone.utc) + timedelta(seconds=10 ** 6)
     out = ds.process_expirations(now=future)
     assert out["expired"] == 1
     cur = ds.get_dispatch(d["dispatch_id"])
@@ -666,7 +666,7 @@ def test_timeout_on_single_provider_leaves_others_pending():
     did = d["dispatch_id"]
 
     # Manually expire P1's attempt only
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     past = now - timedelta(seconds=100)
     future = now + timedelta(seconds=100)
     ds._attempts().update_one({"dispatch_id": did, "responder_id": p1["responder_id"]},
@@ -690,7 +690,7 @@ def test_timeout_on_all_providers_marks_dispatch_failed():
     d = create_dispatch(case_id="CASE-TO-ALL")["dispatch"]
     did = d["dispatch_id"]
 
-    past = datetime.utcnow() - timedelta(seconds=100)
+    past = datetime.now(timezone.utc) - timedelta(seconds=100)
     ds._attempts().update_one({"dispatch_id": did, "responder_id": p1["responder_id"]},
                               {"$set": {"expires_at": past}})
     ds._attempts().update_one({"dispatch_id": did, "responder_id": p2["responder_id"]},

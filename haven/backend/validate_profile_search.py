@@ -135,15 +135,31 @@ mm = ps.deterministic_name_search(COLL, "nirmal", 10)
 check("PROF-aaa" in _ids(mm) and "PROF-bbb" in _ids(mm), "similar names both appear as separate leads")
 
 # 4) Name typed into DESCRIPTION box must not be buried (name dominance)
-hyb = ps.hybrid_description_search(COLL, "nirmal nehra", 10)
-top = hyb["matches"][0]
-check(top["profile_id"] == "PROF-aaa" and top["match_score"] >= 0.90, "full name in description box floored to >=0.90")
-check(hyb["mode"] == "keyword_fallback", "semantic unavailable -> keyword_fallback mode")
-check(hyb["degraded"] is False, "degraded False when semantic backend simply absent")
+# Isolate from host .env GEMINI_API_KEY so semantic-absent case is deterministic,
+# AND separately verify semantic-configured-but-vector-unavailable sets degraded=True.
+_orig_sem_avail = ps._semantic_available
+try:
+    ps._semantic_available = lambda: False
+    hyb = ps.hybrid_description_search(COLL, "nirmal nehra", 10)
+    top = hyb["matches"][0]
+    check(top["profile_id"] == "PROF-aaa" and top["match_score"] >= 0.90, "full name in description box floored to >=0.90")
+    check(hyb["mode"] == "keyword_fallback", "semantic unavailable -> keyword_fallback mode")
+    check(hyb["degraded"] is False, "degraded False when semantic backend simply absent")
+
+    ps._semantic_available = lambda: True
+    hyb_deg = ps.hybrid_description_search(COLL, "nirmal nehra", 10)
+    check(hyb_deg["mode"] == "keyword_fallback", "semantic error degrades to keyword_fallback")
+    check(hyb_deg["degraded"] is True, "degraded True when semantic backend enabled but vector search fails")
+finally:
+    ps._semantic_available = _orig_sem_avail
 
 # 4b) Description keyword search finds the right record
-d = ps.hybrid_description_search(COLL, "scar on left cheek black jacket", 10)
-check("PROF-ccc" in _ids(d["matches"]), "description keyword search finds scar/jacket record")
+try:
+    ps._semantic_available = lambda: False
+    d = ps.hybrid_description_search(COLL, "scar on left cheek black jacket", 10)
+    check("PROF-ccc" in _ids(d["matches"]), "description keyword search finds scar/jacket record")
+finally:
+    ps._semantic_available = _orig_sem_avail
 
 # ══════════════════ AUDIT #11: canonical-matcher convergence ═════════════════
 # These checks back the HTTP regression tests (test_haven_upgrade.py,

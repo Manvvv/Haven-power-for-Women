@@ -126,6 +126,7 @@ export default function AdminPage() {
   // Filters for audit logs
   const [page, setPage] = useState(1)
   const [totalLogs, setTotalLogs] = useState(0)
+  const [userSearch, setUserSearch] = useState('')
   const [actionFilter, setActionFilter] = useState('')
   const [actorFilter, setActorFilter] = useState('')
   const [caseFilter, setCaseFilter] = useState('')
@@ -185,11 +186,13 @@ export default function AdminPage() {
     }
   }
 
-    const fetchUsers = async () => {
+    const fetchUsers = async (queryText?: string) => {
     setLoading(true)
     setFetchError('')
     try {
-      const res = await secureFetch('/admin/users')
+      const q = (queryText ?? userSearch).trim()
+      const url = q ? `/admin/users?search=${encodeURIComponent(q)}` : '/admin/users'
+      const res = await secureFetch(url)
       if (res.ok) {
         const data = await res.json()
         setUsers(data.users || [])
@@ -222,6 +225,28 @@ export default function AdminPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleUserStatusToggle = async (userId: string, currentActive: boolean) => {
+    try {
+      const nextActive = !currentActive
+      const reason = !nextActive ? (window.prompt(`Reason to suspend ${userId}:`, 'Policy violation / safety review') ?? '') : ''
+      if (!nextActive && !reason) return
+      const res = await secureFetch(`/admin/users/${encodeURIComponent(userId)}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active: nextActive, reason }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        setMessage({ type: 'success', text: `User ${userId} ${nextActive ? 'reactivated' : 'suspended'}.` })
+        fetchUsers()
+      } else {
+        setMessage({ type: 'error', text: data.detail || 'Could not update user account status.' })
+      }
+    } catch (e: any) {
+      setMessage({ type: 'error', text: e?.message || 'Network error updating user status.' })
+    }
+    setTimeout(() => setMessage(null), 4000)
   }
 
   const handleRoleChange = async (userId: string, newRole: string) => {
@@ -543,22 +568,45 @@ export default function AdminPage() {
         {/* TAB 2: User & Role Management */}
         {activeTab === 'users' && (
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-            <h2 className="text-lg font-bold text-slate-900 mb-4">Registered & Active Users</h2>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+              <h2 className="text-lg font-bold text-slate-900">Registered & Active Users</h2>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={userSearch}
+                  onChange={(e) => setUserSearch(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') fetchUsers(e.currentTarget.value) }}
+                  placeholder="Search user ID, name, or role..."
+                  className="px-3 py-1.5 text-sm rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-pink-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => fetchUsers()}
+                  className="px-3 py-1.5 text-xs font-semibold bg-pink-700 text-white rounded-lg hover:bg-pink-800"
+                >
+                  Search
+                </button>
+              </div>
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-50/75 text-xs text-slate-500 uppercase font-semibold">
                     <th className="py-3 px-4">User Identifier</th>
                     <th className="py-3 px-4">Safe Word Armed</th>
+                    <th className="py-3 px-4">Status</th>
                     <th className="py-3 px-4">Current Role</th>
                     <th className="py-3 px-4">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {users.map((u, idx) => (
+                  {users.map((u, idx) => {
+                    const isActive = u.active !== false
+                    return (
                     <tr key={idx} className="hover:bg-slate-50/80 transition-colors">
                       <td className="py-3 px-4 font-mono font-medium text-slate-800">
-                        {u.user_id}
+                        <div>{u.user_id}</div>
+                        {(u.name || u.email) && <div className="text-xs font-sans text-slate-400">{u.name || u.email}</div>}
                       </td>
                       <td className="py-3 px-4">
                         {u.configured_safe_word ? (
@@ -569,29 +617,44 @@ export default function AdminPage() {
                           <span className="text-xs text-slate-400">Not set</span>
                         )}
                       </td>
+                      <td className="py-3 px-4">
+                        <span className={`px-2 py-0.5 rounded text-xs font-semibold ${isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                          {isActive ? 'ACTIVE' : 'SUSPENDED'}
+                        </span>
+                      </td>
                       <td className="py-3 px-4 font-semibold text-xs text-pink-700">
                         <span className="px-2 py-1 rounded-md bg-pink-50 border border-pink-100">
                           {u.role || 'user'}
                         </span>
                       </td>
                       <td className="py-3 px-4">
-                        <select
-                          defaultValue={u.role || 'user'}
-                          onChange={(e) => handleRoleChange(u.user_id, e.target.value)}
-                          className="px-2.5 py-1 text-xs rounded-lg border border-slate-200 bg-white focus:ring-2 focus:ring-pink-500 focus:outline-none"
-                        >
-                          <option value="user">User (Standard)</option>
-                          <option value="authority">Authority (Responder)</option>
-                          <option value="police">Police Officer</option>
-                          <option value="protection_officer">Protection Officer</option>
-                          <option value="admin">Administrator</option>
-                        </select>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <select
+                            defaultValue={u.role || 'user'}
+                            onChange={(e) => handleRoleChange(u.user_id, e.target.value)}
+                            className="px-2.5 py-1 text-xs rounded-lg border border-slate-200 bg-white focus:ring-2 focus:ring-pink-500 focus:outline-none"
+                          >
+                            <option value="user">User (Standard)</option>
+                            <option value="authority">Authority (Responder)</option>
+                            <option value="police">Police Officer</option>
+                            <option value="protection_officer">Protection Officer</option>
+                            <option value="admin">Administrator</option>
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => handleUserStatusToggle(u.user_id, isActive)}
+                            className={`px-2.5 py-1 text-xs font-semibold rounded-lg border ${isActive ? 'border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100' : 'border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100'}`}
+                          >
+                            {isActive ? 'Suspend' : 'Reactivate'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                   {users.length === 0 && !loading && (
                     <tr>
-                      <td colSpan={4} className="py-8 text-center text-slate-400">
+                      <td colSpan={5} className="py-8 text-center text-slate-400">
                         No user records found in current session database.
                       </td>
                     </tr>
@@ -982,6 +1045,30 @@ export default function AdminPage() {
                   <div className="text-xs text-slate-500 font-medium">Audit Trail Records</div>
                   <div className="text-2xl font-bold text-slate-900 mt-1">
                     {systemStats?.metrics?.total_audit_records ?? '—'}
+                  </div>
+                </div>
+                <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-100">
+                  <div className="text-xs text-rose-700 font-medium">Active Incidents</div>
+                  <div className="text-2xl font-bold text-rose-900 mt-1">
+                    {systemStats?.metrics?.active_incidents ?? '—'}
+                  </div>
+                </div>
+                <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-100">
+                  <div className="text-xs text-emerald-700 font-medium">Resolved Incidents</div>
+                  <div className="text-2xl font-bold text-emerald-900 mt-1">
+                    {systemStats?.metrics?.resolved_incidents ?? '—'}
+                  </div>
+                </div>
+                <div className="p-3.5 rounded-xl bg-sky-50 border border-sky-100">
+                  <div className="text-xs text-sky-700 font-medium">Approved Providers</div>
+                  <div className="text-2xl font-bold text-sky-900 mt-1">
+                    {systemStats?.metrics?.approved_providers ?? '—'}
+                  </div>
+                </div>
+                <div className="p-3.5 rounded-xl bg-violet-50 border border-violet-100">
+                  <div className="text-xs text-violet-700 font-medium">Active Responders</div>
+                  <div className="text-2xl font-bold text-violet-900 mt-1">
+                    {systemStats?.metrics?.active_responders ?? '—'}
                   </div>
                 </div>
               </div>

@@ -1,4 +1,4 @@
-﻿"""Admin routes for system metrics, user roles, system config, and security audit logs."""
+"""Admin routes for system metrics, user roles, system config, and security audit logs."""
 import os
 import logging
 from typing import Optional
@@ -11,7 +11,7 @@ from services.authority_service import (
     CANONICAL_ROLES, get_authority_by_id, set_role,
 )
 from services import responder_service
-from models.schemas import ResponderAdminUpdateModel
+from models.schemas import ResponderAdminUpdateModel, AdminUserStatusModel
 
 logger = logging.getLogger("haven_backend")
 router = APIRouter(prefix="", tags=["Admin"])
@@ -83,9 +83,10 @@ def get_audit_logs(
 def list_admin_users(
     page: int = Query(1, ge=1),
     limit: int = Query(30, ge=1, le=100),
+    search: Optional[str] = Query(None, max_length=120),
     current_user: AuthUser = Depends(require_admin)
 ):
-    """List known users extracted from active configurations and case records.
+    """List known users extracted from active configurations, accounts, and case records.
 
     ADMIN-only (P1-4): the user roster is admin-only data. Role comes from the
     verified token via require_admin; no client-supplied field can grant access.
@@ -94,31 +95,59 @@ def list_admin_users(
     if db is None:
         return {"users": [], "total": 0}
 
+    from services.db import users as users_coll_fn, trusted_contacts as tc_coll_fn
+    users_coll = users_coll_fn()
+    active_status_map = {}
+    if users_coll is not None:
+        for urec in users_coll.find({}, {"_id": 0, "user_id": 1, "active": 1, "suspended_reason": 1, "email": 1, "name": 1, "role": 1, "created_at": 1}).limit(500):
+            uid = urec.get("user_id")
+            if uid:
+                active_status_map[uid] = urec
+
     user_map = {}
+    for uid, urec in active_status_map.items():
+        user_map[uid] = {
+            "user_id": uid,
+            "role": urec.get("role", "user"),
+            "name": urec.get("name"),
+            "email": urec.get("email"),
+            "active": urec.get("active", True) is not False,
+            "suspended_reason": urec.get("suspended_reason"),
+            "configured_safe_word": False,
+            "created_at": urec.get("created_at", datetime.now(timezone.utc).isoformat()),
+            "last_active": urec.get("created_at"),
+        }
+
     # Fetch from voice_sos_config
     configs = voice_sos_config()
     if configs is not None:
-        for c in configs.find({}, {"_id": 0}).limit(100):
+        for c in configs.find({}, {"_id": 0}).limit(200):
             uid = c.get("user_id")
             if uid:
-                user_map[uid] = {
-                    "user_id": uid,
-                    "role": "user",
-                    "configured_safe_word": bool(c.get("safe_word_hash")),
-                    "created_at": c.get("created_at", datetime.now(timezone.utc).isoformat()),
-                    "last_active": c.get("updated_at", c.get("created_at"))
-                }
+                if uid not in user_map:
+                    user_map[uid] = {
+                        "user_id": uid,
+                        "role": "user",
+                        "active": True,
+                        "configured_safe_word": bool(c.get("safe_word_hash")),
+                        "created_at": c.get("created_at", datetime.now(timezone.utc).isoformat()),
+                        "last_active": c.get("updated_at", c.get("created_at"))
+                    }
+                else:
+                    user_map[uid]["configured_safe_word"] = bool(c.get("safe_word_hash"))
+                    user_map[uid]["last_active"] = c.get("updated_at", user_map[uid].get("last_active"))
 
-    # Fetch distinct users from SOS cases
+    # Fetch distinct users from SOS cases (non-demo)
     cases_coll = sos_cases()
     if cases_coll is not None:
-        for case in cases_coll.find({}, {"_id": 0, "user_id": 1, "created_at": 1, "severity": 1}).limit(200):
+        for case in cases_coll.find({"is_demo": {"$ne": True}}, {"_id": 0, "user_id": 1, "created_at": 1, "severity": 1}).limit(300):
             uid = case.get("user_id")
             if uid:
                 if uid not in user_map:
                     user_map[uid] = {
                         "user_id": uid,
                         "role": "user",
+                        "active": True,
                         "configured_safe_word": False,
                         "created_at": case.get("created_at"),
                         "last_active": case.get("created_at")
@@ -129,7 +158,31 @@ def list_admin_users(
                         str(case.get("created_at", ""))
                     )
 
+    # Also include users with trusted contacts
+    tc_coll = tc_coll_fn()
+    if tc_coll is not None:
+        for uid in tc_coll.distinct("user_id"):
+            if uid and uid not in user_map:
+                user_map[uid] = {
+                    "user_id": uid,
+                    "role": "user",
+                    "active": True,
+                    "configured_safe_word": False,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "last_active": None,
+                }
+
     users_list = list(user_map.values())
+    q = (search or "").strip().lower()
+    if q:
+        users_list = [
+            u for u in users_list
+            if q in str(u.get("user_id", "")).lower()
+            or q in str(u.get("name", "")).lower()
+            or q in str(u.get("email", "")).lower()
+            or q in str(u.get("role", "")).lower()
+        ]
+
     total = len(users_list)
     paginated = users_list[(page - 1) * limit : page * limit]
 
@@ -138,6 +191,59 @@ def list_admin_users(
         "total": total,
         "page": page,
         "limit": limit
+    }
+
+
+@router.patch("/admin/users/{user_id}/status")
+def update_user_account_status(
+    user_id: str = Path(...),
+    body: AdminUserStatusModel = Body(...),
+    current_user: AuthUser = Depends(require_admin),
+):
+    """Suspend or reactivate an end-user account (Admin only).
+
+    Enforced by auth._check_user_active on authenticated user endpoints.
+    """
+    if user_id == current_user.user_id and not body.active:
+        raise HTTPException(status_code=400, detail="An administrator cannot suspend their own account.")
+    if user_id in ("anonymous", "anon"):
+        raise HTTPException(status_code=400, detail="Cannot suspend synthetic anonymous bucket.")
+
+    from services.db import users as users_coll_fn
+    users_coll = users_coll_fn()
+    if users_coll is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    now = datetime.now(timezone.utc)
+    update_fields = {
+        "user_id": user_id,
+        "active": bool(body.active),
+        "updated_at": now,
+        "status_updated_by": current_user.user_id,
+    }
+    if not body.active:
+        update_fields["suspended_reason"] = (body.reason or "Suspended by administrator").strip()[:300]
+        update_fields["suspended_at"] = now
+    else:
+        update_fields["suspended_reason"] = ""
+
+    users_coll.update_one(
+        {"user_id": user_id},
+        {"$set": update_fields, "$setOnInsert": {"role": "user", "created_at": now}},
+        upsert=True,
+    )
+    action = "USER_REACTIVATED" if body.active else "USER_SUSPENDED"
+    log_audit(
+        actor_id=current_user.user_id,
+        role=current_user.role,
+        action=action,
+        metadata={"target_user_id": user_id, "active": bool(body.active), "reason": update_fields.get("suspended_reason", "")},
+    )
+    return {
+        "success": True,
+        "user_id": user_id,
+        "active": bool(body.active),
+        "reason": update_fields.get("suspended_reason", ""),
     }
 
 
@@ -260,14 +366,31 @@ def get_system_stats(current_user: AuthUser = Depends(require_admin)):
     cases_coll = sos_cases()
     events_coll = sos_events()
     audits_coll = audit_logs()
+    from services.db import responders as resp_coll_fn, demo_collection
 
-    total_cases = cases_coll.count_documents({}) if cases_coll is not None else 0
-    total_events = events_coll.count_documents({}) if events_coll is not None else 0
+    non_demo_filter = {"is_demo": {"$ne": True}}
+    total_cases = cases_coll.count_documents(non_demo_filter) if cases_coll is not None else 0
+    active_incidents = cases_coll.count_documents(
+        {"is_demo": {"$ne": True}, "status": {"$nin": ["RESOLVED", "CANCELLED"]}}
+    ) if cases_coll is not None else 0
+    resolved_incidents = cases_coll.count_documents(
+        {"is_demo": {"$ne": True}, "status": "RESOLVED"}
+    ) if cases_coll is not None else 0
+    total_events = events_coll.count_documents(non_demo_filter) if events_coll is not None else 0
     total_audits = audits_coll.count_documents({}) if audits_coll is not None else 0
+
+    resp_coll = resp_coll_fn()
+    approved_providers = resp_coll.count_documents({"verified": True, "active": True}) if resp_coll is not None else 0
+    active_responders = resp_coll.count_documents(
+        {"verified": True, "active": True, "status": {"$in": ["AVAILABLE", "BUSY"]}}
+    ) if resp_coll is not None else 0
+
+    demo_cases_coll = demo_collection("cases")
+    demo_cases_isolated = demo_cases_coll.count_documents({}) if demo_cases_coll is not None else 0
 
     total_users = 0
     if cases_coll is not None:
-        users = cases_coll.distinct("user_id")
+        users = cases_coll.distinct("user_id", non_demo_filter)
         total_users = len(users)
 
     return {
@@ -275,9 +398,14 @@ def get_system_stats(current_user: AuthUser = Depends(require_admin)):
         "db_connected": True,
         "metrics": {
             "total_cases": total_cases,
+            "active_incidents": active_incidents,
+            "resolved_incidents": resolved_incidents,
+            "approved_providers": approved_providers,
+            "active_responders": active_responders,
             "total_users": total_users,
             "total_events": total_events,
-            "total_audit_records": total_audits
+            "total_audit_records": total_audits,
+            "demo_cases_isolated": demo_cases_isolated,
         }
     }
 

@@ -1,4 +1,4 @@
-﻿"""Case & Profile Intelligence routes (formerly Culprit DB) + semantic case search.
+"""Case & Profile Intelligence routes (formerly Culprit DB) + semantic case search.
 
 Search now goes through `services.profile_search`:
   * NAME queries → deterministic lexical search (no embeddings, no similarity

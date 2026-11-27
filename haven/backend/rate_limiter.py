@@ -138,11 +138,13 @@ def get_client_ip(request) -> str:
 _backend_resolved = False
 _backend_mode = "memory"          # one of: "redis", "memory", "fail_closed"
 _redis_client = None
+_last_probe_at = 0.0
+_PROBE_RETRY_SECONDS = 15.0
 _backend_lock = threading.Lock()
 
 
 def _resolve_backend() -> Tuple[str, object]:
-    """Resolve the shared backend once, then cache the decision.
+    """Resolve the shared backend and support recovery after transient startup failure.
 
     Returns (mode, client). mode is:
       * "redis"       -> distributed backend is live (use `client`)
@@ -150,13 +152,30 @@ def _resolve_backend() -> Tuple[str, object]:
       * "fail_closed" -> Redis is required in production but unavailable; the
                          rate-limit path must reject requests (503).
     """
-    global _backend_resolved, _backend_mode, _redis_client
-    if _backend_resolved:
+    global _backend_resolved, _backend_mode, _redis_client, _last_probe_at
+    now = time.monotonic()
+    should_retry = (
+        _backend_resolved
+        and _backend_mode != "redis"
+        and REDIS_ENABLED
+        and bool(REDIS_URL)
+        and (now - _last_probe_at) >= _PROBE_RETRY_SECONDS
+    )
+    if _backend_resolved and not should_retry:
         return _backend_mode, _redis_client
     with _backend_lock:
-        if _backend_resolved:
+        now = time.monotonic()
+        should_retry = (
+            _backend_resolved
+            and _backend_mode != "redis"
+            and REDIS_ENABLED
+            and bool(REDIS_URL)
+            and (now - _last_probe_at) >= _PROBE_RETRY_SECONDS
+        )
+        if _backend_resolved and not should_retry:
             return _backend_mode, _redis_client
         _backend_resolved = True
+        _last_probe_at = now
 
         if not (REDIS_ENABLED and REDIS_URL):
             _redis_client = None
@@ -215,10 +234,11 @@ def backend_status() -> str:
 
 def _reset_backend_for_tests():
     """Test hook: force re-resolution (used by the standalone/pytest suites)."""
-    global _backend_resolved, _backend_mode, _redis_client
+    global _backend_resolved, _backend_mode, _redis_client, _last_probe_at
     _backend_resolved = False
     _backend_mode = "memory"
     _redis_client = None
+    _last_probe_at = 0.0
 
 
 # ─── Rate-limit core (backend-agnostic) ─────────────────────

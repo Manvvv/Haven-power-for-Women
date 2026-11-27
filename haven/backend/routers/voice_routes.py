@@ -16,7 +16,16 @@ from auth import (
     verify_safe_word,
     verify_safe_word_in_transcript,
 )
-from models.schemas import VoiceSOSConfigModel, VoiceSOSTriggerModel, VoiceAnalyzeModel
+from models.schemas import (
+    VoiceSOSConfigModel,
+    VoiceSOSTriggerModel,
+    VoiceAnalyzeModel,
+    TrustedContactEditModel,
+    TrustedContactVerifyModel,
+    TrustedContactNotifyModel,
+    VoiceTranscribeModel,
+    VoiceExtractModel,
+)
 from services.db import get_collection, serialize_doc
 
 
@@ -37,6 +46,8 @@ from services.contact_validation import (
     normalize_phone,
     valid_phone,
     valid_email,
+    normalize_relationship,
+    clamp_priority,
 )
 
 router = APIRouter(prefix="", tags=["Voice SOS"])
@@ -163,7 +174,9 @@ def voice_sos_save_config(
                 "name": c.name,
                 "phone": c.phone,
                 "email": c.email,
-                "priority": c.priority,
+                "relationship": normalize_relationship(getattr(c, "relationship", "other")),
+                "priority": clamp_priority(c.priority),
+                "verification_status": "UNVERIFIED",
                 "created_at": datetime.now(timezone.utc),
             })
 
@@ -285,9 +298,11 @@ def voice_sos_trigger(
         "latitude": trigger.latitude,
         "longitude": trigger.longitude,
         "location_accuracy": trigger.location_accuracy,
+        "location_captured_at": trigger.location_captured_at,
         "status": "triggered",
         "contact_delivery_status": contact_delivery,
         "is_test": False,
+        "is_demo": False,
         "created_at": datetime.now(timezone.utc),
     }
     # Attach optional voice-AI metadata if the client analysed the transcript first.
@@ -303,6 +318,11 @@ def voice_sos_trigger(
 
     # Save to sos_cases so it appears in authority dashboard
     if _live('sos_cases') is not None:
+        has_valid_coords = (
+            trigger.latitude is not None
+            and trigger.longitude is not None
+            and not (trigger.latitude == 0.0 and trigger.longitude == 0.0)
+        )
         case_doc = {
             "case_id": event_id,
             "user_id": target_user_id,
@@ -313,7 +333,7 @@ def voice_sos_trigger(
             # to downgrade the response.
             "severity": "critical",
             "immediate_danger": True,
-            "location": f"{trigger.latitude}, {trigger.longitude}" if trigger.latitude else "Unknown",
+            "location": f"{trigger.latitude}, {trigger.longitude}" if has_valid_coords else "Unknown",
             "summary": "Voice SOS activation - immediate emergency response required",
             "needs": ["Immediate Police Dispatch", "GPS Tracking", "Medical Alert"],
             # Canonical lifecycle state (see lifecycle_service.SOS_STATES). A voice
@@ -322,9 +342,14 @@ def voice_sos_trigger(
             # IN_PROGRESS / RESOLVED are all valid. Previously wrote the
             # non-canonical "active", which broke transition/resolve (spurious 409).
             "status": "RECEIVED",
+            "is_demo": False,
             "created_at": datetime.now(timezone.utc),
             "has_evidence": False,
         }
+        if trigger.location_accuracy is not None:
+            case_doc["location_accuracy"] = trigger.location_accuracy
+        if trigger.location_captured_at:
+            case_doc["location_captured_at"] = trigger.location_captured_at
         # Canonical numeric fix on the CASE row (not only the human-readable
         # string above), so the Rapid Response Network resolver and the authority
         # map read the same coordinates the card shows. Empty {} when no valid
@@ -444,11 +469,12 @@ def voice_sos_test(
     # Authenticated callers only test their OWN config; anonymous test path preserved.
     target_user_id = current_user.user_id if current_user else trigger.user_id
     cfg = _live('voice_sos_config').find_one({"user_id": target_user_id})
-    if not cfg:
+    is_voice_ai_test = (trigger.mode or "").strip().lower() == "voice_ai_test"
+    if not cfg and not is_voice_ai_test:
         raise HTTPException(status_code=404, detail="Voice SOS not configured")
 
-    stored_hash = cfg.get("safe_word_hash", "")
-    stored_salt = cfg.get("safe_word_salt", "")
+    stored_hash = (cfg or {}).get("safe_word_hash", "")
+    stored_salt = (cfg or {}).get("safe_word_salt", "")
 
     match = False
     if trigger.spoken_phrase and stored_salt:
@@ -467,7 +493,7 @@ def voice_sos_test(
         _live('sos_events').insert_one({
             "event_id": event_id,
             "user_id": target_user_id,
-            "trigger_type": "test",
+            "trigger_type": "voice_ai_test" if is_voice_ai_test else "test",
             "timestamp": ts,
             "latitude": trigger.latitude,
             "longitude": trigger.longitude,
@@ -512,6 +538,89 @@ def voice_sos_history(
     }
 
 
+def _record_contact_history(
+    user_id: str,
+    contact_id: str,
+    contact_name: str,
+    action: str,
+    details: str = "",
+) -> None:
+    """Persist per-user trusted contact management/notification history."""
+    hist = _live("trusted_contact_history")
+    if hist is None:
+        return
+    try:
+        hist.insert_one({
+            "history_id": f"CHIST-{int(time.time())}-{secrets.token_hex(3)}",
+            "user_id": user_id,
+            "contact_id": contact_id,
+            "contact_name": contact_name,
+            "action": action,
+            "details": details[:300],
+            "timestamp": datetime.now(timezone.utc),
+        })
+    except Exception:
+        pass
+
+
+@router.get("/voice-sos/stt-status")
+def voice_sos_stt_status():
+    """Report honest speech-to-text (Whisper) service availability and missing env vars."""
+    from services.voice_ai_service import get_stt_status
+    return get_stt_status()
+
+
+@router.post("/voice-sos/transcribe")
+def voice_sos_transcribe(
+    body: VoiceTranscribeModel,
+    current_user: AuthUser = Depends(get_current_user),
+    _=Depends(rate_limit_dependency(max_requests=20, window_seconds=60)),
+):
+    """Securely upload recorded Voice SOS audio for Whisper transcription (EN/HI).
+
+    Never fabricates a transcript when provider credentials are missing.
+    """
+    from services.voice_ai_service import transcribe_audio_whisper
+    try:
+        res = transcribe_audio_whisper(body.audio_base64, body.mime_type, language=body.language)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    if not res.get("available"):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": res.get("error_code", "STT_UNAVAILABLE"),
+                "missing_env": res.get("missing_env", []),
+                "detail": res.get("detail", "Speech transcription service is unavailable."),
+            },
+        )
+    log_audit(
+        actor_id=current_user.user_id,
+        role=current_user.role,
+        action="VOICE_SOS_TRANSCRIBED",
+        result="success",
+        metadata={"provider": res.get("provider"), "language": res.get("language_detected")},
+    )
+    return res
+
+
+@router.post("/voice-sos/extract")
+def voice_sos_extract(
+    body: VoiceExtractModel,
+    current_user: AuthUser = Depends(get_current_user),
+    _=Depends(rate_limit_dependency(max_requests=30, window_seconds=60)),
+):
+    """Extract candidate emergency category, description, mentioned location, and
+    suggested urgency from an editable transcript. Requires human confirmation.
+    """
+    transcript = (body.transcript or "").strip()
+    if not transcript:
+        raise HTTPException(status_code=422, detail="Transcript cannot be empty.")
+    from services.voice_ai_service import extract_emergency_info
+    return extract_emergency_info(transcript, language=body.language or "auto")
+
+
 @router.post("/trusted-contacts")
 def save_trusted_contacts(
     body: dict = Body(...),
@@ -537,13 +646,29 @@ def save_trusted_contacts(
             "name": str(c.get("name", ""))[:100],
             "phone": str(c.get("phone", ""))[:30],
             "email": str(c.get("email", ""))[:120],
-            "priority": int(c.get("priority", 1)),
+            "relationship": normalize_relationship(str(c.get("relationship", "other"))),
+            "priority": clamp_priority(c.get("priority", 1)),
+            "verification_status": str(c.get("verification_status", "UNVERIFIED")),
             "created_at": datetime.now(timezone.utc),
         }
         _live('trusted_contacts').insert_one(doc)
         saved.append({"name": doc["name"], "contact_id": doc["contact_id"]})
 
     return {"success": True, "contacts_saved": len(saved), "contacts": saved}
+
+
+@router.get("/trusted-contacts/history/{user_id}")
+def get_trusted_contact_history(
+    user_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """Return contact management & notification history (owner or authority/admin)."""
+    require_self_or_authority(user_id, current_user)
+    hist = _live("trusted_contact_history")
+    if hist is None:
+        return {"history": []}
+    rows = list(hist.find({"user_id": user_id}, {"_id": 0}).sort("timestamp", -1).limit(30))
+    return {"history": [serialize_doc(r) for r in rows]}
 
 
 @router.get("/trusted-contacts/{user_id}")
@@ -563,7 +688,7 @@ def get_trusted_contacts(
     return {"contacts": [serialize_doc(c) for c in contacts]}
 
 
-# ── Per-contact add / delete ─────────────────────────────────────────────────
+# ── Per-contact add / edit / verify / delete ─────────────────────────────────
 # The legacy full-replace POST /trusted-contacts (above) is kept for the initial
 # Voice-SOS setup flow, but the day-to-day contacts UI uses these single-item
 # endpoints. Operating on ONE contact atomically server-side removes the
@@ -593,6 +718,7 @@ def add_trusted_contact(
     name = str(body.get("name", "")).strip()[:100]
     phone = str(body.get("phone", "")).strip()[:30]
     email = str(body.get("email", "")).strip()[:120]
+    relationship = normalize_relationship(str(body.get("relationship", "other")))
     if not name:
         raise HTTPException(status_code=400, detail="Contact name is required")
     if not valid_phone(phone):
@@ -610,10 +736,7 @@ def add_trusted_contact(
     if any(normalize_phone(c.get("phone", "")) == norm for c in existing):
         raise HTTPException(status_code=409, detail="This phone number is already saved")
 
-    try:
-        priority = int(body.get("priority", len(existing) + 1))
-    except (TypeError, ValueError):
-        priority = len(existing) + 1
+    priority = clamp_priority(body.get("priority"), default=min(MAX_TRUSTED_CONTACTS, len(existing) + 1))
 
     doc = {
         "user_id": user_id,
@@ -621,18 +744,200 @@ def add_trusted_contact(
         "name": name,
         "phone": phone,
         "email": email,
+        "relationship": relationship,
         "priority": priority,
+        "verification_status": "UNVERIFIED",
+        "verified_at": None,
         "created_at": datetime.now(timezone.utc),
     }
     _live('trusted_contacts').insert_one(doc)
+    _record_contact_history(user_id, doc["contact_id"], doc["name"], "ADDED",
+                            f"Added ({relationship}, priority {priority})")
 
     contacts = list(_live('trusted_contacts').find(
         {"user_id": user_id}, {"_id": 0}).sort("priority", 1))
     return {
         "success": True,
-        "contact": {"name": doc["name"], "contact_id": doc["contact_id"]},
+        "contact": serialize_doc(doc),
         "contacts_saved": len(contacts),
         "contacts": [serialize_doc(c) for c in contacts],
+    }
+
+
+@router.patch("/trusted-contacts/{contact_id}")
+def edit_trusted_contact(
+    contact_id: str,
+    body: TrustedContactEditModel,
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """Edit ONE trusted contact owned by the authenticated user."""
+    coll = _live('trusted_contacts')
+    if coll is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    user_id = current_user.user_id
+    existing = coll.find_one({"user_id": user_id, "contact_id": contact_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    updates = {"updated_at": datetime.now(timezone.utc)}
+    if body.name is not None:
+        clean_name = body.name.strip()[:100]
+        if not clean_name:
+            raise HTTPException(status_code=400, detail="Contact name is required")
+        updates["name"] = clean_name
+    if body.phone is not None:
+        clean_phone = body.phone.strip()[:30]
+        if not valid_phone(clean_phone):
+            raise HTTPException(status_code=400, detail="A valid phone number is required")
+        norm = normalize_phone(clean_phone)
+        others = list(coll.find({"user_id": user_id, "contact_id": {"$ne": contact_id}}, {"_id": 0}))
+        if any(normalize_phone(c.get("phone", "")) == norm for c in others):
+            raise HTTPException(status_code=409, detail="This phone number is already saved")
+        if normalize_phone(existing.get("phone", "")) != norm:
+            updates["verification_status"] = "UNVERIFIED"
+            updates["verified_at"] = None
+        updates["phone"] = clean_phone
+    if body.email is not None:
+        clean_email = body.email.strip()[:120]
+        if not valid_email(clean_email):
+            raise HTTPException(status_code=400, detail="Email address is not valid")
+        updates["email"] = clean_email
+    if body.relationship is not None:
+        updates["relationship"] = normalize_relationship(body.relationship)
+    if body.priority is not None:
+        updates["priority"] = clamp_priority(body.priority)
+
+    coll.update_one({"user_id": user_id, "contact_id": contact_id}, {"$set": updates})
+    _record_contact_history(
+        user_id, contact_id, updates.get("name") or existing.get("name", "Contact"),
+        "EDITED", "Contact details updated",
+    )
+    contacts = list(coll.find({"user_id": user_id}, {"_id": 0}).sort("priority", 1))
+    return {
+        "success": True,
+        "contacts_saved": len(contacts),
+        "contacts": [serialize_doc(c) for c in contacts],
+    }
+
+
+@router.post("/trusted-contacts/{contact_id}/verify")
+def verify_trusted_contact(
+    contact_id: str,
+    body: TrustedContactVerifyModel = Body(default=TrustedContactVerifyModel()),
+    current_user: AuthUser = Depends(get_current_user),
+):
+    """Verify a trusted contact's readiness honestly.
+
+    If `mode == 'send_sms_otp'`, invokes credential-gated Twilio SMS; when Twilio
+    is unconfigured, returns honest `NOT_CONFIGURED` status (never fakes delivery).
+    If `mode == 'confirm_manual'` and `manual_verified=True`, records explicit user
+    out-of-band confirmation (`VERIFIED`, method `user_confirmed`).
+    """
+    coll = _live('trusted_contacts')
+    if coll is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    user_id = current_user.user_id
+    contact = coll.find_one({"user_id": user_id, "contact_id": contact_id}, {"_id": 0})
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    now = datetime.now(timezone.utc)
+    if body.mode == "send_sms_otp":
+        from services.sms_service import notify_trusted_contacts, STATUS_NOT_CONFIGURED, STATUS_FAILED
+        msg = "HAVEN Verification Check: You were listed as a trusted emergency contact on HAVEN."
+        res_list = notify_trusted_contacts([contact], f"VERIFY-{contact_id}", msg)
+        outcome = res_list[0].to_safe_dict() if res_list else {"status": STATUS_FAILED}
+        st = outcome.get("status", STATUS_FAILED)
+        if st == STATUS_NOT_CONFIGURED:
+            _record_contact_history(user_id, contact_id, contact.get("name", ""), "VERIFY_ATTEMPTED",
+                                    "SMS verification unavailable (Twilio not configured)")
+            return {
+                "success": False,
+                "sms_configured": False,
+                "verification_status": contact.get("verification_status", "UNVERIFIED"),
+                "delivery": outcome,
+                "message": "SMS provider is not configured (set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER) or use manual confirmation after checking the number directly.",
+            }
+        v_status = "PENDING_SMS_CONFIRMATION" if st != STATUS_FAILED else contact.get("verification_status", "UNVERIFIED")
+        coll.update_one({"user_id": user_id, "contact_id": contact_id},
+                        {"$set": {"verification_status": v_status, "last_verify_attempt_at": now}})
+        _record_contact_history(user_id, contact_id, contact.get("name", ""), "VERIFY_SMS_SENT", f"Provider status: {st}")
+        contacts = list(coll.find({"user_id": user_id}, {"_id": 0}).sort("priority", 1))
+        return {"success": st != STATUS_FAILED, "sms_configured": True, "delivery": outcome, "contacts": [serialize_doc(c) for c in contacts]}
+
+    if not body.manual_verified:
+        raise HTTPException(status_code=422, detail="Confirmation flag required to mark verified.")
+
+    coll.update_one(
+        {"user_id": user_id, "contact_id": contact_id},
+        {"$set": {"verification_status": "VERIFIED", "verified_method": "user_confirmed", "verified_at": now}},
+    )
+    _record_contact_history(user_id, contact_id, contact.get("name", ""), "VERIFIED", "Confirmed manually by account owner")
+    contacts = list(coll.find({"user_id": user_id}, {"_id": 0}).sort("priority", 1))
+    return {
+        "success": True,
+        "verification_status": "VERIFIED",
+        "contacts": [serialize_doc(c) for c in contacts],
+    }
+
+
+@router.post("/trusted-contacts/notify")
+def notify_trusted_contacts_endpoint(
+    body: TrustedContactNotifyModel,
+    current_user: AuthUser = Depends(get_current_user),
+    _=Depends(rate_limit_dependency(max_requests=10, window_seconds=60)),
+):
+    """Explicitly send user-approved emergency alert details to selected trusted contacts.
+
+    Honest delivery: relies on credential-gated Twilio SMS and returns exact per-contact
+    statuses (`NOT_CONFIGURED`, `QUEUED`, `SENT_TO_PROVIDER`, `FAILED`) plus client
+    WhatsApp links for fallback. Never claims SMS sent unless confirmed by provider.
+    """
+    if not body.explicit_consent:
+        raise HTTPException(status_code=422, detail="Explicit user consent is required before notifying contacts.")
+    coll = _live('trusted_contacts')
+    if coll is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    user_id = current_user.user_id
+
+    query = {"user_id": user_id}
+    if body.contact_ids:
+        query["contact_id"] = {"$in": body.contact_ids}
+    contacts = list(coll.find(query, {"_id": 0}).sort("priority", 1))
+    if not contacts:
+        raise HTTPException(status_code=404, detail="No matching trusted contacts found.")
+
+    ref = body.case_id or f"ALERT-{int(time.time())}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    parts = [f"HAVEN Emergency Notification (Ref: {ref})", f"Time: {now_iso}"]
+    if body.incident_summary and body.incident_summary.strip():
+        parts.append(f"Details: {body.incident_summary.strip()[:300]}")
+    if body.include_location and body.location_text and body.location_text.strip():
+        parts.append(f"Approved Location: {body.location_text.strip()[:200]}")
+    alert_text = "\n".join(parts)
+
+    from services.sms_service import notify_trusted_contacts
+    results = notify_trusted_contacts(contacts, ref, alert_text)
+    safe_results = [r.to_safe_dict() for r in results]
+    whatsapp_links = [
+        {"contact_id": c.get("contact_id"), "name": c.get("name", "Contact"),
+         "url": format_whatsapp_url(c.get("phone", ""), alert_text)}
+        for c in contacts
+    ]
+
+    for r in safe_results:
+        _record_contact_history(
+            user_id, r.get("contact_id", ""), r.get("name", ""),
+            "NOTIFIED", f"Ref {ref} — delivery status: {r.get('status')}",
+        )
+    log_audit(actor_id=user_id, role=current_user.role, action="TRUSTED_CONTACTS_NOTIFIED",
+              case_id=body.case_id, metadata={"count": len(safe_results)})
+    return {
+        "success": True,
+        "reference": ref,
+        "timestamp": now_iso,
+        "deliveries": safe_results,
+        "whatsapp_links": whatsapp_links,
     }
 
 
@@ -652,6 +957,7 @@ def delete_trusted_contact(
         raise HTTPException(status_code=503, detail="Database unavailable")
     user_id = current_user.user_id
 
+    existing = _live('trusted_contacts').find_one({"user_id": user_id, "contact_id": contact_id}, {"_id": 0, "name": 1})
     result = _live('trusted_contacts').delete_one(
         {"user_id": user_id, "contact_id": contact_id})
     if result.deleted_count == 0:
@@ -659,6 +965,7 @@ def delete_trusted_contact(
         # someone else. Either way we reveal nothing and change nothing.
         raise HTTPException(status_code=404, detail="Contact not found")
 
+    _record_contact_history(user_id, contact_id, (existing or {}).get("name", "Contact"), "DELETED", "Removed contact")
     contacts = list(_live('trusted_contacts').find(
         {"user_id": user_id}, {"_id": 0}).sort("priority", 1))
     return {

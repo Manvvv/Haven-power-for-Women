@@ -21,8 +21,11 @@ export function useNotifications(userId?: string, token?: string | null) {
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsHost = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/^https?:\/\//, '')
+    let closed = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
 
     const connect = () => {
+      if (closed) return
       const ws = new WebSocket(
         `${wsProtocol}//${wsHost}/ws/notifications/${encodeURIComponent(userId)}?token=${encodeURIComponent(token)}`
       )
@@ -37,7 +40,9 @@ export function useNotifications(userId?: string, token?: string | null) {
       }
 
       ws.onclose = () => {
-        setTimeout(connect, 3000)
+        if (!closed) {
+          retryTimer = setTimeout(connect, 3000)
+        }
       }
 
       wsRef.current = ws
@@ -46,8 +51,11 @@ export function useNotifications(userId?: string, token?: string | null) {
     connect()
 
     return () => {
+      closed = true
+      if (retryTimer) clearTimeout(retryTimer)
       if (wsRef.current) {
         wsRef.current.close()
+        wsRef.current = null
       }
     }
   }, [userId, token])

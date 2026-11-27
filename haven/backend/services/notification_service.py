@@ -52,10 +52,21 @@ class NotificationManager:
                         pass
 
     async def notify_user(self, user_id: str, event_type: str, data: dict):
-        """Push to specific user."""
+        """Push to specific user with consistent notification shape."""
         if user_id in self.active_connections:
-            message = json.dumps({"event_type": event_type, "data": data})
-            for ws in self.active_connections[user_id]:
+            payload = {
+                "id": (data or {}).get("notification_id") or f"live-{int(time.time()*1000)}",
+                "type": event_type,
+                "event_type": event_type,
+                "title": (data or {}).get("title") or event_type.replace("_", " ").title(),
+                "message": (data or {}).get("message", ""),
+                "case_id": (data or {}).get("case_id"),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "read": False,
+                "data": data,
+            }
+            message = json.dumps(payload)
+            for ws in list(self.active_connections[user_id]):
                 try:
                     await ws.send_text(message)
                 except Exception:

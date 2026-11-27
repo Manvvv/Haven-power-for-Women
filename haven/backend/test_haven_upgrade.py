@@ -4,7 +4,7 @@ Tests RBAC, Audit Logging, SOS Lifecycle, Offline Idempotency,
 AI Risk Classification, Semantic Search, Legal Citations, Privacy Center, and Analytics.
 """
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 from main import app
 from auth import create_access_token
@@ -661,7 +661,7 @@ class TestCaseListRegression:
                         {"$set": {"case_id": cid, "user_id": "USER-REG",
                                   "status": "CREATED", "severity": "high",
                                   "decoded_text": "regression seed record",
-                                  "created_at": datetime.utcnow()}}, upsert=True)
+                                  "created_at": datetime.now(timezone.utc)}}, upsert=True)
         r = client.get("/cases", headers={"Authorization": f"Bearer {authority_token}"})
         assert r.status_code == 200
         data = r.json()
@@ -679,7 +679,7 @@ class TestCaseListRegression:
         coll.update_one({"case_id": cid},
                         {"$set": {"case_id": cid, "user_id": "USER-REG",
                                   "status": "active", "severity": "critical",
-                                  "created_at": datetime.utcnow()}}, upsert=True)
+                                  "created_at": datetime.now(timezone.utc)}}, upsert=True)
         r = client.get("/cases", headers={"Authorization": f"Bearer {authority_token}"})
         assert r.status_code == 200
         seeded = [c for c in r.json()["cases"] if c["case_id"] == cid]
@@ -1832,6 +1832,9 @@ class TestP0SecurityFixes:
     def test_production_config_ok_when_configured(self, monkeypatch):
         import auth
         monkeypatch.setattr(auth, "IS_PRODUCTION", True)
+        # In production STRICT_AUTH is always True. Patch the module attr because
+        # test_shake_sos_auth sets os.environ["STRICT_AUTH"]="false" at module level.
+        monkeypatch.setattr(auth, "STRICT_AUTH", True)
         monkeypatch.setattr(auth, "JWT_SECRET", "a-real-strong-secret")
         monkeypatch.setattr(auth, "AUTHORITY_SECRET_KEY", "a-real-authority-key")
         monkeypatch.setattr(auth, "_RAW_EVID_KEY", "a-real-evidence-key")
@@ -2472,3 +2475,4 @@ class TestP2BodySizeLimit:
         with pytest.raises(HTTPException) as ei:
             _decode_image_b64("A" * (MAX_IMAGE_B64_CHARS + 1))
         assert ei.value.status_code == 413
+

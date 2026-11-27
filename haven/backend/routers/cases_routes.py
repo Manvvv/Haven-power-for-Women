@@ -1,4 +1,4 @@
-﻿"""Cases routes — view and manage SOS cases."""
+"""Cases routes — view and manage SOS cases."""
 import re
 import logging
 from datetime import datetime, timezone
@@ -24,7 +24,7 @@ def get_cases(
     collection = sos_cases()
     if collection is None:
         return {"cases": [], "total": 0}
-    query = {}
+    query = {"is_demo": {"$ne": True}}
     if severity:
         # Case-insensitive exact match (data mixes 'critical' and 'CRITICAL').
         query["severity"] = {"$regex": f"^{re.escape(severity)}$", "$options": "i"}
@@ -114,18 +114,29 @@ def update_case(
                 # the resolution because the in-memory cache purge/audit hiccuped.
                 pass
 
-            # Rapid Response Network RESOLVED hook. The EXISTING authorized case-
-            # resolution action above is the SINGLE source of truth — HAVEN does not
-            # invent a parallel resolution path. Resolve any active dispatch for this
-            # case (idempotent: a no-op when there is none), release the bound
+            # Rapid Response Network RESOLVED / CANCELLED hook. The EXISTING authorized
+            # case-resolution action above is the SINGLE source of truth — HAVEN does not
+            # invent a parallel resolution path. Resolve or cancel any active dispatch for
+            # this case (idempotent: a no-op when there is none), release the bound
             # responder, purge the dispatch's live-location room, and push the
             # resulting notification intents over WebSockets (best-effort). None of
             # this can fail the case resolution itself.
             try:
                 from services import dispatch_service
                 from services.dispatch_notify import emit_intents_threadsafe
-                _d, _notify = dispatch_service.resolve_dispatch_for_case(
-                    case_id, current_user.user_id, current_user.role)
+                if canonical_status(new_status) == "CANCELLED":
+                    active_d = dispatch_service.get_active_dispatch_for_case(case_id)
+                    _d, _notify = (None, [])
+                    if active_d:
+                        _d, _err, _notify = dispatch_service.cancel_dispatch(
+                            active_d.get("dispatch_id"),
+                            current_user.user_id,
+                            current_user.role,
+                            reason=body.dispatcher_notes or "Case cancelled",
+                        )
+                else:
+                    _d, _notify = dispatch_service.resolve_dispatch_for_case(
+                        case_id, current_user.user_id, current_user.role)
                 if _d:
                     try:
                         from main import dispatch_manager
@@ -135,6 +146,37 @@ def update_case(
                     emit_intents_threadsafe(_notify)
             except Exception:
                 pass
+
+        # Real-time WebSocket + persisted notification to the case owner for every
+        # verified authority status transition (except anonymous cases).
+        try:
+            case_owner = collection.find_one({"case_id": case_id}, {"_id": 0, "user_id": 1})
+            owner_id = str((case_owner or {}).get("user_id") or "")
+            if owner_id and owner_id not in ("anonymous", "anon"):
+                canon_next = canonical_status(new_status)
+                from services.notification_service import notification_manager
+                from services.dispatch_notify import emit_intents_threadsafe
+                nid = notification_manager.create_notification(
+                    recipient_id=owner_id,
+                    event_type="CASE_STATUS_UPDATED",
+                    title=f"Incident {canon_next}",
+                    message=f"Incident {case_id} status updated to {canon_next}.",
+                    case_id=case_id,
+                )
+                emit_intents_threadsafe([{
+                    "kind": "user",
+                    "target": owner_id,
+                    "event_type": "CASE_STATUS_UPDATED",
+                    "data": {
+                        "notification_id": nid,
+                        "case_id": case_id,
+                        "status": canon_next,
+                        "title": f"Incident {canon_next}",
+                        "message": f"Incident {case_id} status updated to {canon_next}.",
+                    },
+                }])
+        except Exception:
+            pass
 
     # Remaining non-status fields (notes, assigned unit, priority, severity) update directly.
     if all_fields:

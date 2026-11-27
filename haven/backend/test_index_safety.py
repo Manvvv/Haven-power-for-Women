@@ -758,6 +758,23 @@ def test_cors_production_requires_public_origin():
         )
 
 
+def test_dev_cors_regex_allows_loopback_ports_only_outside_production():
+    import re
+    import main
+
+    if not main.IS_PRODUCTION:
+        assert main.dev_cors_origin_regex is not None
+        pat = re.compile(main.dev_cors_origin_regex)
+        assert pat.fullmatch("http://localhost:3000")
+        assert pat.fullmatch("http://localhost:3001")
+        assert pat.fullmatch("http://127.0.0.1:3001")
+        assert pat.fullmatch("http://[::1]:3000")
+        assert not pat.fullmatch("https://evil.example")
+        assert not pat.fullmatch("http://localhost.evil.com:3001")
+    else:
+        assert main.dev_cors_origin_regex is None
+
+
 def test_catalog_unique_plans_match_standard_ops():
     assert catalog_consistency_errors() == []
     plans = set((p.collection, p.field, p.unique, p.sparse) for p in UNIQUE_INDEX_PLANS)

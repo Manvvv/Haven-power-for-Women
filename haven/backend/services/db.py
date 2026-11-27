@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import datetime, timezone
 from pymongo import MongoClient
 from dotenv import load_dotenv
 from pathlib import Path
@@ -35,6 +36,10 @@ def legal_docs(): return get_collection('legal_docs')
 def therapy_sessions(): return get_collection('therapy_sessions')
 def voice_sos_config(): return get_collection('voice_sos_config')
 def trusted_contacts(): return get_collection('trusted_contacts')
+def trusted_contact_history(): return get_collection('trusted_contact_history')
+def safety_checkins(): return get_collection('safety_checkins')
+def users(): return get_collection('users')
+def demo_collection(name: str): return get_collection(f'demo_{name}')
 def sos_events(): return get_collection('sos_events')
 def dir_reports(): return get_collection('dir_reports')
 def audit_logs(): return get_collection('audit_logs')
@@ -83,6 +88,11 @@ def serialize_doc(doc: dict) -> dict:
     for k, v in doc.items():
         if k == '_id':
             continue
+        elif isinstance(v, datetime):
+            # MongoDB stores UTC; PyMongo returns naive datetimes when tz_aware=False.
+            # Always emit an explicit UTC offset so browser Date.parse never treats it as local time.
+            utc_v = v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v
+            result[k] = utc_v.isoformat()
         elif hasattr(v, 'isoformat'):
             result[k] = v.isoformat()
         elif isinstance(v, list):

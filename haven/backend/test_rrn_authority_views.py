@@ -29,7 +29,7 @@ same dependency shims as the engine suite so it works in an offline sandbox.
 """
 import inspect
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import _rrn_test_support  # noqa: F401  (installs dep shims only when missing)
 
@@ -163,7 +163,7 @@ def test_view_distance_uses_geojson_lng_lat_ordering():
     # A distance is only reported for a FRESH fix (a stale/untimed fix is withheld),
     # so the ordering check must supply a current timestamp.
     view = dr._nearby_responder_view(
-        _unit([r_lng, r_lat], updated_at=datetime.utcnow()), INC_LNG, INC_LAT)
+        _unit([r_lng, r_lat], updated_at=datetime.now(timezone.utc)), INC_LNG, INC_LAT)
     expected = round(dr.haversine_meters(INC_LAT, INC_LNG, r_lat, r_lng))
     assert view["distance_m"] == expected
     assert view["distance_m"] < 50_000          # the near reading, never the swap
@@ -171,7 +171,7 @@ def test_view_distance_uses_geojson_lng_lat_ordering():
 
 
 def test_view_fresh_within_max_age():
-    ts = datetime.utcnow() - timedelta(seconds=MAX_AGE - 60)
+    ts = datetime.now(timezone.utc) - timedelta(seconds=MAX_AGE - 60)
     view = dr._nearby_responder_view(_unit([INC_LNG, INC_LAT], ts), INC_LNG, INC_LAT)
     assert view["location_fresh"] is True
     assert view["location_age_seconds"] is not None
@@ -179,7 +179,7 @@ def test_view_fresh_within_max_age():
 
 
 def test_view_stale_beyond_max_age():
-    ts = datetime.utcnow() - timedelta(seconds=MAX_AGE + 60)
+    ts = datetime.now(timezone.utc) - timedelta(seconds=MAX_AGE + 60)
     view = dr._nearby_responder_view(_unit([INC_LNG, INC_LAT], ts), INC_LNG, INC_LAT)
     assert view["location_fresh"] is False
     assert view["location_age_seconds"] >= MAX_AGE
@@ -197,7 +197,7 @@ def test_view_omits_identity_and_raw_gps():
     ONLY the safe fields — no officer_name/badge/phone/user_id, and never the raw
     `current_location` GeoJSON blob. The authority map coordinate is a clean,
     deliberate {lat,lng} `location` pair (product decision), NOT the raw blob."""
-    ts = datetime.utcnow()
+    ts = datetime.now(timezone.utc)
     rec = _unit(
         [INC_LNG, INC_LAT], ts,
         officer_name="Insp. Real Name", badge_number="HR-204-9931",
@@ -225,7 +225,7 @@ def test_view_location_present_when_coords_exist():
     """The authority-only `location` is a clean {lat,lng} derived from stored
     GeoJSON [lng, lat] — proving the ordering is not swapped into {lat=lng}."""
     r_lng, r_lat = 77.2500, 28.6500
-    view = dr._nearby_responder_view(_unit([r_lng, r_lat], datetime.utcnow()),
+    view = dr._nearby_responder_view(_unit([r_lng, r_lat], datetime.now(timezone.utc)),
                                      INC_LNG, INC_LAT)
     assert view["location"] == {"lat": r_lat, "lng": r_lng}
 
@@ -238,14 +238,14 @@ def test_view_location_none_when_no_fix():
 
 def test_view_location_rejects_out_of_range_coords():
     """A corrupt/out-of-range stored coordinate yields location=None, not a bad pin."""
-    view = dr._nearby_responder_view(_unit([999.0, 999.0], datetime.utcnow()),
+    view = dr._nearby_responder_view(_unit([999.0, 999.0], datetime.now(timezone.utc)),
                                      INC_LNG, INC_LAT)
     assert view["location"] is None
 
 
 def test_view_has_no_eta():
     """The whole RRN never fabricates an ETA — the view must carry none."""
-    view = dr._nearby_responder_view(_unit([INC_LNG, INC_LAT], datetime.utcnow()),
+    view = dr._nearby_responder_view(_unit([INC_LNG, INC_LAT], datetime.now(timezone.utc)),
                                      INC_LNG, INC_LAT)
     assert "eta" not in view and "eta_minutes" not in view
 
@@ -278,9 +278,9 @@ def test_nearby_delegates_eligibility_to_engine_with_server_values():
         # Two units, deliberately NOT in the order the UI might prefer, to prove the
         # endpoint does not re-rank — it echoes the engine's nearest-first order.
         return [
-            _unit([77.2100, 28.6100], datetime.utcnow(),
+            _unit([77.2100, 28.6100], datetime.now(timezone.utc),
                   responder_id="RESP-A", display_label="Unit A"),
-            _unit([77.2500, 28.6500], datetime.utcnow(),
+            _unit([77.2500, 28.6500], datetime.now(timezone.utc),
                   responder_id="RESP-B", display_label="Unit B"),
         ]
 
@@ -333,7 +333,7 @@ def test_metrics_merges_real_counts_over_stored_rows():
         {"status": "ACCEPTED"}, {"status": "EN_ROUTE"}, {"status": "HELP_PROVIDED"},
         {"status": "RESOLVED"}, {"status": "CANCELLED"},   # terminal -> not active
     ]
-    fresh_ts = datetime.utcnow()
+    fresh_ts = datetime.now(timezone.utc)
     responders = [
         {"active": True, "verified": True, "duty_status": "ON_DUTY", "status": "AVAILABLE",
          "assigned_dispatch_id": None, "location_updated_at": fresh_ts},
@@ -411,9 +411,9 @@ def _net_unit(status="AVAILABLE", active=True, verified=True, fresh=True,
     fresh=True -> fresh fix; fresh="stale" -> aged beyond MAX_AGE; fresh=False -> none."""
     ts = None
     if fresh is True:
-        ts = datetime.utcnow()
+        ts = datetime.now(timezone.utc)
     elif fresh == "stale":
-        ts = datetime.utcnow() - timedelta(seconds=MAX_AGE + 60)
+        ts = datetime.now(timezone.utc) - timedelta(seconds=MAX_AGE + 60)
     extra.setdefault("duty_status", "ON_DUTY")
     return _unit(coords=coords, updated_at=ts, status=status,
                  active=active, verified=verified, **extra)

@@ -8,7 +8,7 @@ test_rapid_response_network (no Mongo/Redis required).
 """
 import pathlib
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -56,7 +56,7 @@ def test_backend_policy_is_300s_and_matches_frontend_module():
 
 # ── fresh / stale / missing via the write path + view ───────────────────────────
 def test_fresh_fix_is_stored_and_shown_as_current(on_duty_unit):
-    t = datetime.utcnow() - timedelta(seconds=10)
+    t = datetime.now(timezone.utc) - timedelta(seconds=10)
     rs.update_location(on_duty_unit, INC_LNG, INC_LAT, fix_time=t)
     rec = _stored(on_duty_unit)
     assert rec["current_location"]["coordinates"] == [INC_LNG, INC_LAT]
@@ -66,7 +66,7 @@ def test_fresh_fix_is_stored_and_shown_as_current(on_duty_unit):
 
 
 def test_stale_stored_fix_is_never_shown_as_current():
-    old = datetime.utcnow() - timedelta(seconds=MAX_AGE + 120)
+    old = datetime.now(timezone.utc) - timedelta(seconds=MAX_AGE + 120)
     view = dr._nearby_responder_view(_unit([INC_LNG, INC_LAT], old), INC_LNG, INC_LAT)
     assert view["location_fresh"] is False
     assert view["location"] is None  # network view withholds the stale point
@@ -82,22 +82,22 @@ def test_missing_fix_is_unknown_and_not_fabricated():
 # ── future timestamps ───────────────────────────────────────────────────────────
 def test_future_timestamp_beyond_skew_is_rejected_not_stored(on_duty_unit):
     before = _stored(on_duty_unit).get("current_location")
-    future = datetime.utcnow() + timedelta(hours=1)
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
     out = rs.update_location(on_duty_unit, INC_LNG + 0.01, INC_LAT, fix_time=future)
     assert out.get("fix_rejected") == "future_timestamp"
     assert _stored(on_duty_unit).get("current_location") == before
 
 
 def test_small_future_skew_is_tolerated(on_duty_unit):
-    skewed = datetime.utcnow() + timedelta(seconds=5)
+    skewed = datetime.now(timezone.utc) + timedelta(seconds=5)
     out = rs.update_location(on_duty_unit, INC_LNG, INC_LAT, fix_time=skewed)
     assert out.get("fix_rejected") is None and out.get("fix_superseded") is None
 
 
 # ── out-of-order delivery ───────────────────────────────────────────────────────
 def test_delayed_older_fix_does_not_overwrite_newer(on_duty_unit):
-    newer_t = datetime.utcnow() - timedelta(seconds=5)
-    older_t = datetime.utcnow() - timedelta(seconds=120)
+    newer_t = datetime.now(timezone.utc) - timedelta(seconds=5)
+    older_t = datetime.now(timezone.utc) - timedelta(seconds=120)
     rs.update_location(on_duty_unit, 77.6000, 12.9800, fix_time=newer_t)
     out = rs.update_location(on_duty_unit, 77.1000, 12.1000, fix_time=older_t)
     assert out.get("fix_superseded") is True
@@ -106,8 +106,8 @@ def test_delayed_older_fix_does_not_overwrite_newer(on_duty_unit):
 
 
 def test_newer_fix_after_older_is_applied(on_duty_unit):
-    older_t = datetime.utcnow() - timedelta(seconds=120)
-    newer_t = datetime.utcnow() - timedelta(seconds=5)
+    older_t = datetime.now(timezone.utc) - timedelta(seconds=120)
+    newer_t = datetime.now(timezone.utc) - timedelta(seconds=5)
     rs.update_location(on_duty_unit, 77.1000, 12.1000, fix_time=older_t)
     rs.update_location(on_duty_unit, 77.6000, 12.9800, fix_time=newer_t)
     assert _stored(on_duty_unit)["current_location"]["coordinates"] == [77.6000, 12.9800]
@@ -124,7 +124,7 @@ def test_timezone_aware_fix_time_is_normalised(on_duty_unit):
 # ── server-side integrity: off-duty clearing and consent still enforced ─────────
 def test_off_duty_clears_fix_so_nothing_stale_lingers(on_duty_unit):
     rs.update_location(on_duty_unit, INC_LNG, INC_LAT,
-                       fix_time=datetime.utcnow() - timedelta(seconds=10))
+                       fix_time=datetime.now(timezone.utc) - timedelta(seconds=10))
     rs.set_duty(on_duty_unit, "OFF_DUTY")
     rec = _stored(on_duty_unit)
     assert rec.get("current_location") is None

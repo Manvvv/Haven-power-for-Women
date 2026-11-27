@@ -11,7 +11,7 @@ from services.audit_service import log_audit
 # pipeline state (not just the strict next one). This keeps the triage workflow
 # practical while still preventing nonsensical moves such as un-resolving a case
 # or jumping backwards through the automated pipeline.
-_TRIAGE_TARGETS = ["ACKNOWLEDGED", "IN_PROGRESS", "RESOLVED"]
+_TRIAGE_TARGETS = ["ACKNOWLEDGED", "IN_PROGRESS", "RESOLVED", "CANCELLED"]
 
 VALID_TRANSITIONS = {
     "CREATED": ["ENCODED", "SHARED", "RECEIVED", "DECODED", "AI_ANALYZED"] + _TRIAGE_TARGETS,
@@ -20,12 +20,15 @@ VALID_TRANSITIONS = {
     "RECEIVED": ["DECODED", "AI_ANALYZED"] + _TRIAGE_TARGETS,
     "DECODED": ["AI_ANALYZED"] + _TRIAGE_TARGETS,
     "AI_ANALYZED": _TRIAGE_TARGETS,
-    "ACKNOWLEDGED": ["IN_PROGRESS", "RESOLVED"],
-    "IN_PROGRESS": ["ACKNOWLEDGED", "RESOLVED"],
+    "ACKNOWLEDGED": ["IN_PROGRESS", "RESOLVED", "CANCELLED"],
+    "IN_PROGRESS": ["ACKNOWLEDGED", "RESOLVED", "CANCELLED"],
     "RESOLVED": [],
+    "CANCELLED": [],
 }
 
 # Ordered list of all lifecycle states (used by UIs and tests).
+# CANCELLED is a terminal branch represented in VALID_TRANSITIONS (kept out of
+# SOS_STATES so the ordered happy-path pipeline ends at RESOLVED).
 SOS_STATES = [
     "CREATED", "ENCODED", "SHARED", "RECEIVED", "DECODED",
     "AI_ANALYZED", "ACKNOWLEDGED", "IN_PROGRESS", "RESOLVED",

@@ -41,7 +41,7 @@ import argparse
 import os
 import sys
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # ── Safety: must import BEFORE any service modules so the check fires first ──────
 
@@ -198,7 +198,7 @@ def _seed_one(account: dict, password: str, seed_location: bool) -> str:
             responder_service.get_responder(badge),
             {
                 "current_location": {"type": "Point", "coordinates": [float(lng), float(lat)]},
-                "location_updated_at": datetime.utcnow(),
+                "location_updated_at": datetime.now(timezone.utc),
             },
         )
         print(f"  [{badge}] Location seeded: {lat}N, {lng}E (fresh, within 2 km of case)")

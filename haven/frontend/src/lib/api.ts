@@ -41,15 +41,22 @@ export async function getAuthHeaders(customToken?: string): Promise<Record<strin
     return headers;
   }
 
-  // 3. Check for Clerk session token if in browser
-  if (typeof window !== 'undefined' && (window as any).Clerk?.session) {
-    try {
-      const token = await (window as any).Clerk.session.getToken();
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
+  // 3. Check for Clerk session token if in browser (wait briefly if Clerk is mid-hydration)
+  if (typeof window !== 'undefined' && (window as any).Clerk) {
+    if (!(window as any).Clerk.loaded) {
+      for (let i = 0; i < 30 && !(window as any).Clerk.loaded; i++) {
+        await new Promise((r) => setTimeout(r, 50));
       }
-    } catch {
-      // Non-blocking fallback
+    }
+    if ((window as any).Clerk.session) {
+      try {
+        const token = await (window as any).Clerk.session.getToken();
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`;
+        }
+      } catch {
+        // Non-blocking fallback
+      }
     }
   }
 

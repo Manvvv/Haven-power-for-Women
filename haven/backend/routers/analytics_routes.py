@@ -1,4 +1,4 @@
-﻿"""Analytics routes — dashboard metrics for authorities.
+"""Analytics routes — dashboard metrics for authorities.
 
 All metrics are computed live from stored documents (Phase 16). Acknowledgement
 and resolution times are derived from the real sos_status_history transition
@@ -82,8 +82,11 @@ def analytics_dashboard(current_user: AuthUser = Depends(require_authority)):
     res = _avg_minutes_to(["RESOLVED"])
 
     events_coll = sos_events()
-    voice_total = events_coll.count_documents({"trigger_type": "voice_code"}) if events_coll is not None else 0
-    voice_tests = events_coll.count_documents({"trigger_type": "test"}) if events_coll is not None else 0
+    # Exclude test-mode records (is_test=True) from production analytics totals so
+    # QA / demo activity does not inflate operational metrics shown to authorities.
+    _not_test = {"is_test": {"$ne": True}}
+    voice_total = events_coll.count_documents({"trigger_type": "voice_code", **_not_test}) if events_coll is not None else 0
+    voice_tests = events_coll.count_documents({"trigger_type": {"$in": ["test", "voice_ai_test"]}}) if events_coll is not None else 0
 
     return {
         "total_sos": total, "pending": pending, "in_progress": in_progress,
@@ -152,8 +155,8 @@ def voice_sos_analytics(current_user: AuthUser = Depends(require_authority)):
     events_coll = sos_events()
     if events_coll is None:
         return {"total_activations": 0, "test_activations": 0}
-    total = events_coll.count_documents({"trigger_type": "voice_code"})
-    tests = events_coll.count_documents({"trigger_type": "test"})
+    total = events_coll.count_documents({"trigger_type": "voice_code", "is_test": {"$ne": True}})
+    tests = events_coll.count_documents({"trigger_type": {"$in": ["test", "voice_ai_test"]}})
     failed = events_coll.count_documents({"status": "failed"})
     return {
         "total_activations": total, "test_activations": tests,
